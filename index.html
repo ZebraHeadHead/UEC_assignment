@@ -46,7 +46,7 @@
 </div>
 
 <div id="toolbar">
-  <input id="search" type="search" placeholder="Search logs… (e.g. Password, User B, Bank)">
+  <input id="search" type="search" placeholder="Search… e.g. Bank, User B, rule:manual, rule:pattern" title="Free text searches the log. rule:<label> filters by Risk Rule label (manual, automated, routine, new-automation, pattern-change, role, financial, script, reverted, edited-later, many-fields); several labels must all match; rule:a,b means a or b. status:open | approved | denied | mixed filters by review status.">
   <select id="searchCol" title="Column to search">
     <option value="-1">All columns</option>
   </select>
@@ -56,6 +56,7 @@
     <button id="tabTable">Table view</button>
   </div>
   <span class="chips" id="riskChips" title="Risk filter: click to show / hide a level"></span>
+  <div class="chips rule-chips" id="ruleChips"></div>
   <select id="sortMode" title="Order of events">
     <option value="risk">Sort: highest risk first</option>
     <option value="time">Sort: chronological</option>

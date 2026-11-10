@@ -219,6 +219,21 @@ const RiskEngine = (() => {
 
   const LEVELS = ["high", "medium", "low"];
   const LABEL = { high: "High", medium: "Medium", low: "Low" };
+  // Rule labels: searchable as rule:<id> (or a prefix of the id / label). Groups only order the chips.
+  const TAGS = [
+    { id: "manual", label: "Manual", group: "Who" },
+    { id: "automated", label: "Automated", group: "Who" },
+    { id: "routine", label: "Routine", group: "Pattern" },
+    { id: "new-automation", label: "New automation", group: "Pattern" },
+    { id: "pattern-change", label: "Pattern change", group: "Pattern" },
+    { id: "role", label: "Role / access", group: "What" },
+    { id: "financial", label: "Financial", group: "What" },
+    { id: "script", label: "Script / workflow edit", group: "What" },
+    { id: "reverted", label: "Reverted later", group: "History" },
+    { id: "edited-later", label: "Edited again later", group: "History" },
+    { id: "many-fields", label: "Many fields", group: "History" },
+  ];
+  const KIND_TAG = { role: "role", money: "financial", automation: "script", manual: "manual", size: "many-fields" }; // "routine" only from the routine flag (= bulk-approvable)
   const BASE = { high: 300, medium: 200, low: 100 };
   const NEVER = /(?!)/;
 
@@ -238,6 +253,14 @@ const RiskEngine = (() => {
     const ROLE_RT = matcher(rules.roleRecordTypes), ROLE_FIELD = matcher(rules.roleFields);
     const FIN_RT = matcher(rules.financialRecordTypes), FIN_FIELD = matcher(rules.financialFields);
     const AUTOMATION_RT = matcher(rules.automationRecordTypes);
+    // Which entries of a list matched a value (shown by "Edit rule"). Contexts match exactly.
+    const hits = (key, value) => rules[key].filter((x) => (key === "manualContexts" ? x.toLowerCase() === String(value).toLowerCase() : matcher([x]).test(value)));
+    const source = (rtKey, rtValue, fieldKey, fieldsHit) => {
+      const out = [];
+      if (rtKey && matcher(rules[rtKey]).test(rtValue)) out.push({ list: rtKey, value: rtValue, entries: hits(rtKey, rtValue) });
+      if (fieldKey && fieldsHit.length) out.push({ list: fieldKey, value: list(fieldsHit), entries: [...new Set(fieldsHit.flatMap((f) => hits(fieldKey, f)))] });
+      return out;
+    };
 
     // ---- history per record+field (independent of grouping) ----
     const hist = new Map(), cache = new Map();
@@ -290,14 +313,18 @@ const RiskEngine = (() => {
         const finFields = fieldList.filter((f) => FIN_FIELD.test(f));
         if (ROLE_RT.test(rt) || roleFields.length) {
           level = "high"; mark((f) => ROLE_FIELD.test(f));
-          reasons.push({ kind: "role", text: `Manual role / access change${roleFields.length ? `: ${list(roleFields)}` : ` on ${rt}`}` });
+          reasons.push({ kind: "role", text: `Manual role / access change${roleFields.length ? `: ${list(roleFields)}` : ` on ${rt}`}`, rules: source("roleRecordTypes", rt, "roleFields", roleFields) });
         }
         if (FIN_RT.test(rt) || finFields.length) {
           level = "high"; mark((f) => FIN_FIELD.test(f));
-          reasons.push({ kind: "money", text: `Manual financial change${finFields.length ? `: ${list(finFields)}` : ` on ${rt}`}` });
+          reasons.push({ kind: "money", text: `Manual financial change${finFields.length ? `: ${list(finFields)}` : ` on ${rt}`}`, rules: source("financialRecordTypes", rt, "financialFields", finFields) });
         }
-        if (!level && AUTOMATION_RT.test(rt)) { level = "medium"; reasons.push({ kind: "automation", text: `Manual edit to automation (${rt}): changes how scripts / workflows behave` }); }
-        if (!level) { level = "low"; reasons.push({ kind: "manual", text: "Manual change, not role / access or financial" }); }
+        if (!level && AUTOMATION_RT.test(rt)) { level = "medium"; reasons.push({ kind: "automation", text: `Manual edit to automation (${rt}): changes how scripts / workflows behave`, rules: source("automationRecordTypes", rt) }); }
+        if (!level) {
+          level = "low";
+          const ctx = ctxs.find((c) => MANUAL.has(c.toLowerCase()));
+          reasons.push({ kind: "manual", text: `Manual change (${ctx}), not role / access or financial`, rules: [{ list: "manualContexts", value: ctx, entries: hits("manualContexts", ctx) }] });
+        }
       } else {
         // Basis 2: did the automation behave the way it always has?
         const ctxLabel = ctxs.join(" + "), rtLabel = rt || "(no record type)";
@@ -325,21 +352,29 @@ const RiskEngine = (() => {
         }
         if (routine && AUTOMATION_RT.test(rt)) {
           level = "medium"; routine = false;
-          reasons.push({ kind: "automation", text: `Automated change to a ${rt} definition` });
+          reasons.push({ kind: "automation", text: `Automated change to a ${rt} definition`, rules: source("automationRecordTypes", rt) });
         }
         job.runs++;
         for (const f of fieldList) job.fields.add(f.toLowerCase());
         job.patterns.set(sig, (job.patterns.get(sig) || 0) + 1);
       }
+      const tags = new Set([manual ? "manual" : "automated"]);
+      if (routine) tags.add("routine");
+      if (pattern === "new-job") tags.add("new-automation");
+      if (pattern === "new-fields" || pattern === "new-combination") tags.add("pattern-change");
+      for (const r of reasons) if (KIND_TAG[r.kind]) tags.add(KIND_TAG[r.kind]);
+      if (many) tags.add("many-fields");
+      if (revertedLater.size) tags.add("reverted");
+      if (notReverted.length) tags.add("edited-later");
       out.set(u.id, {
         level, label: LABEL[level], score: BASE[level] + boost, origin: manual ? "manual" : "automated", routine, pattern,
-        reasons: [...reasons, ...notes], riskyRows: risky,
+        reasons: [...reasons, ...notes], riskyRows: risky, tags,
       });
     }
     return out;
   }
 
-  return { assess, LEVELS, LABEL };
+  return { assess, LEVELS, LABEL, TAGS };
 })();
 
 /* =====================================================================
@@ -761,7 +796,7 @@ const XlsxWriter = (() => {
     const restored = ReviewStore.init(rows.length, fileFp);
     match = null; query = ""; $("search").value = "";
     expandedMonths = new Set(); expandedWeeks = new Set();
-    selectScope(months.length ? months[0].key : "__all__");
+    selectScope("__all__"); // start on the work list: everything, highest risk first
     tablePage = 0;
 
     $("dropzone").style.display = "none";
@@ -854,8 +889,43 @@ const XlsxWriter = (() => {
   }
 
   // ---------- Search ----------
+  // "rule:<label>" tokens in the search box filter by Risk Rule labels (all tokens must match);
+  // the rest of the text is the normal search. The box is the single source: chips just edit it.
+  const RULE_TOKEN = /(^|\s)rule:("[^"]*"|\S*)/gi;
+  const STATUS_TOKEN = /(^|\s)status:(\S*)/gi;   // status:open | approved | denied | mixed
+  const STATUS_ALIAS = { open: ["none", "mixed"], pending: ["none", "mixed"], notreviewed: ["none"], approved: ["approved"], denied: ["denied"], mixed: ["mixed"], partly: ["mixed"] };
+  const norm = (x) => String(x).toLowerCase().replace(/[^a-z0-9]/g, "");
+  let ruleQuery = [], ruleUnknown = [];   // ruleQuery: one array of acceptable tag ids per token (a,b = a or b)
+  let statusQuery = null;                 // Set of ReviewStore states allowed, or null
+  function resolveRule(v) {
+    const q = norm(v.replace(/"/g, ""));
+    if (!q) return null;
+    const exact = RiskEngine.TAGS.filter((t) => norm(t.id) === q || norm(t.label) === q);
+    if (exact.length) return exact.map((t) => t.id);
+    const pre = RiskEngine.TAGS.filter((t) => norm(t.id).startsWith(q) || norm(t.label).startsWith(q));
+    return pre.length ? pre.map((t) => t.id) : [];
+  }
   function runSearch() {
-    query = $("search").value.trim().toLowerCase();
+    const raw = $("search").value;
+    ruleQuery = []; ruleUnknown = [];
+    for (const m of raw.matchAll(RULE_TOKEN)) {
+      const alts = new Set();
+      for (const part of m[2].split(",")) {
+        const ids = resolveRule(part);
+        if (ids === null) continue;          // "rule:" still being typed
+        if (ids.length) ids.forEach((x) => alts.add(x)); else ruleUnknown.push(part);
+      }
+      if (alts.size) ruleQuery.push([...alts]);
+    }
+    statusQuery = null;
+    for (const m of raw.matchAll(STATUS_TOKEN)) {
+      const v = norm(m[2]);
+      if (!v) continue;
+      const key = Object.keys(STATUS_ALIAS).find((k) => k.startsWith(v));
+      if (!key) { ruleUnknown.push("status:" + m[2]); continue; }
+      statusQuery = new Set([...(statusQuery || []), ...STATUS_ALIAS[key]]);
+    }
+    query = raw.replace(RULE_TOKEN, " ").replace(STATUS_TOKEN, " ").trim().toLowerCase();
     const col = +$("searchCol").value;
     if (!query) { match = null; }
     else {
@@ -875,8 +945,15 @@ const XlsxWriter = (() => {
 
   const eventHits = (e) => (match ? e.rows.reduce((n, i) => n + match[i], 0) : 0);
   const riskFiltered = () => riskFilter.size < RiskEngine.LEVELS.length;
-  const anyFilter = () => !!match || riskFiltered();
-  const passesSearch = (ei) => !match || eventHits(events[ei]) > 0;
+  const rulesFiltered = () => ruleQuery.length > 0 || ruleUnknown.length > 0 || !!statusQuery;
+  const anyFilter = () => !!match || riskFiltered() || rulesFiltered();
+  const passesRules = (ei, extra = null) => {
+    if (ruleUnknown.length) return false;
+    const tags = events[ei].risk.tags;
+    if (!ruleQuery.every((alts) => alts.some((t) => tags.has(t))) || (extra && !tags.has(extra))) return false;
+    return !statusQuery || statusQuery.has(ReviewStore.summarize(events[ei].rows).state);
+  };
+  const passesSearch = (ei) => (!match || eventHits(events[ei]) > 0) && passesRules(ei);
   const passes = (ei) => riskFilter.has(events[ei].risk.level) && passesSearch(ei);
   const visibleEvents = (g) => (anyFilter() ? g.events.filter(passes) : g.events);
   const byRisk = (a, b) => events[b].risk.score - events[a].risk.score || a - b; // event index order = chronological
@@ -891,13 +968,13 @@ const XlsxWriter = (() => {
   const weekOfScope = (key = selectedGroup) => { const k = scopeKind(key), x = scope(key); return k === "week" ? x : k === "day" && x ? scope(WEEK_PREFIX + x.week) : null; };
   const visCount = (idx) => (anyFilter() ? idx.reduce((n, ei) => n + (passes(ei) ? 1 : 0), 0) : idx.length);
 
+  let pendingDay = null; // a day asked for: shown as its heading inside the week
   function selectScope(key) {
+    if (scopeKind(key) === "day" && scopeIndex.get(key)) { const d = scopeIndex.get(key); pendingDay = d.day; key = WEEK_PREFIX + d.week; }
     const x = scopeIndex.get(key);
     selectedGroup = x || key === "__all__" ? key : "__all__";
     if (x) {
       expandedMonths.add(x.month);
-      if (scopeKind(key) === "week") expandedWeeks.add(x.id);
-      if (scopeKind(key) === "day") expandedWeeks.add(x.week);
     }
     eventsShown = EVENTS_PAGE;
   }
@@ -951,6 +1028,7 @@ const XlsxWriter = (() => {
     setView("grouped");
     render();
     $("main").scrollTop = 0;
+    if (pendingDay) { document.getElementById("dh-" + pendingDay)?.scrollIntoView({ block: "start" }); pendingDay = null; }
   }
   function setView(v) {
     view = v;
@@ -974,16 +1052,66 @@ const XlsxWriter = (() => {
   }
 
   function renderRiskChips() {
-    // Counts per level among events matching the search (ignoring the risk filter itself).
+    // Counts per level among events matching the search and rule labels (ignoring the risk filter itself).
     const counts = { high: 0, medium: 0, low: 0 };
     for (let i = 0; i < events.length; i++) if (passesSearch(i)) counts[events[i].risk.level]++;
     $("riskChips").innerHTML = RiskEngine.LEVELS.map((l) =>
       `<button class="chip risk-${l} ${riskFilter.has(l) ? "on" : ""}" data-risk="${l}" title="${riskFilter.has(l) ? "Hide" : "Show"} ${RiskEngine.LABEL[l]} risk events">● ${RiskEngine.LABEL[l]} <b>${fmt(counts[l])}</b></button>`).join("");
   }
 
+  // Rule chips: count = events that would match if this label were added (search + risk level + current labels).
+  const ruleTokenOn = (id) => ruleQuery.some((alts) => alts.length === 1 && alts[0] === id);
+  function renderRuleChips() {
+    const counts = Object.fromEntries(RiskEngine.TAGS.map((t) => [t.id, 0]));
+    for (let i = 0; i < events.length; i++) {
+      if (!riskFilter.has(events[i].risk.level) || (match && !eventHits(events[i])) || !passesRules(i)) continue;
+      for (const t of events[i].risk.tags) counts[t]++;
+    }
+    let html = viewsHTML() + `<span class="chips-label" title="Filter by Risk Rule label. Also: type rule:manual, rule:financial, rule:pattern … (rule:a,b = a or b; status:open) in the search box">Rules</span>`, group = "";
+    for (const t of RiskEngine.TAGS) {
+      const on = ruleTokenOn(t.id);
+      if (!on && !counts[t.id]) continue;
+      if (t.group !== group) { if (group) html += `<span class="chip-sep"></span>`; group = t.group; }
+      html += `<button class="chip rule ${on ? "on" : ""}" data-rule="${t.id}" title="${on ? "Remove" : "Show only"} “${esc(t.label)}” events (rule:${t.id})">${esc(t.label)} <b>${fmt(counts[t.id])}</b></button>`;
+    }
+    if (ruleUnknown.length) html += ` <span class="err">Unknown: ${esc(ruleUnknown.join(", "))}. Rules: ${RiskEngine.TAGS.map((t) => t.id).join(", ")}; status: open, approved, denied, mixed.</span>`;
+    else if (rulesFiltered()) html += ` <button class="small" data-rule="__clear__" title="Remove all rule: labels from the search">✕ Clear rules</button>`;
+    $("ruleChips").innerHTML = html;
+  }
+  // One-click work-list views: set the rule / status tokens and the risk levels (free text in the box is kept).
+  const VIEWS = [
+    { id: "manual-high", label: "Manual High", tokens: "rule:manual", risk: ["high"], tip: "Changes a person made by hand that the rules rate High (roles / access, financial)" },
+    { id: "patterns", label: "Pattern changes", tokens: "rule:new-automation,pattern-change", risk: null, tip: "Automations running for the first time, or changing fields they never changed before" },
+    { id: "routine-open", label: "Routine to approve", tokens: "rule:routine status:open", risk: null, tip: "Routine automated events nobody has approved or denied yet: check a few, then ✓ Approve routine automated" },
+    { id: "all", label: "Everything", tokens: "", risk: null, tip: "No rule, status or risk filter" },
+  ];
+  const tokensOf = (v) => [...v.matchAll(RULE_TOKEN), ...v.matchAll(STATUS_TOKEN)].map((m) => m[0].trim().toLowerCase()).sort().join(" ");
+  const viewOn = (v) => tokensOf($("search").value) === tokensOf(v.tokens)
+    && (v.risk ? riskFilter.size === v.risk.length && v.risk.every((l) => riskFilter.has(l)) : !riskFiltered());
+  function applyView(id) {
+    const v = VIEWS.find((x) => x.id === id);
+    const box = $("search");
+    box.value = `${box.value.replace(RULE_TOKEN, " ").replace(STATUS_TOKEN, " ")} ${v.tokens}`.replace(/\s+/g, " ").trim();
+    riskFilter = new Set(v.risk || RiskEngine.LEVELS);
+    runSearch();
+  }
+  const viewsHTML = () => `<span class="chips-label">Views</span>${VIEWS.map((v) =>
+    `<button class="chip view ${viewOn(v) ? "on" : ""}" data-view="${v.id}" title="${esc(v.tip)}${v.tokens ? ` (${esc(v.tokens)}${v.risk ? " + High only" : ""})` : ""}">${esc(v.label)}</button>`).join("")}<span class="chip-sep wide"></span>`;
+
+  // Add / remove a rule:<id> token in the search box, then search.
+  function toggleRule(id) {
+    const box = $("search");
+    if (id === "__clear__") box.value = box.value.replace(RULE_TOKEN, " ").replace(STATUS_TOKEN, " ");
+    else if (ruleTokenOn(id)) box.value = box.value.replace(RULE_TOKEN, (m, sp, v) => (norm(v.replace(/"/g, "")) === norm(id) || norm(v) === norm(RiskEngine.TAGS.find((t) => t.id === id).label) ? " " : m));
+    else box.value = `${box.value.trim()} rule:${id}`;
+    box.value = box.value.replace(/\s+/g, " ").trim();
+    runSearch();
+  }
+
   function renderStats() {
     renderProgress();
     renderRiskChips();
+    renderRuleChips();
     if (!anyFilter()) { $("stats").textContent = `${fmt(rows.length)} rows · ${fmt(events.length)} events · ${fmt(groups.length)} days`; return; }
     let ev = 0, n = 0;
     for (let i = 0; i < events.length; i++) if (passes(i)) { ev++; n += match ? eventHits(events[i]) : events[i].rows.length; }
@@ -1021,21 +1149,14 @@ const XlsxWriter = (() => {
       for (const w of m.weeks) {
         const wv = visCount(w.events);
         if (!wv && anyFilter()) continue;
-        const wopen = expandedWeeks.has(w.id);
         html += item("week", w.key, 2, weekLabelLong(w),
-          `<span>${caret(wopen, "days")}${esc(weekLabel(w))}${reviewMark(w)}</span><span>${hiMark(w.events)}<span class="count">${fmt(wv)}</span></span>`, wopen);
-        if (!wopen) continue;
-        for (const d of w.days) {
-          const dv = visCount(d.events);
-          if (!dv && anyFilter()) continue;
-          html += item("day", d.key, 3, dayLabelLong(d.day), `<span>${esc(dayLabel(d.day))}${reviewMark(d)}</span><span>${hiMark(d.events)}<span class="count">${fmt(dv)}</span></span>`);
-        }
+          `<span>${esc(weekLabel(w))}${reviewMark(w)}</span><span>${hiMark(w.events)}<span class="count">${fmt(wv)}</span></span>`);
       }
     }
     if (!any) html += `<div class="empty">No logs match the current search / risk filter.</div>`;
     const sb = $("sidebar");
     sb.setAttribute("role", "tree");
-    sb.setAttribute("aria-label", "Months, weeks and days");
+    sb.setAttribute("aria-label", "Months and weeks");
     sb.innerHTML = html;
     // keep the selected level visible in the tree when it was chosen from the main area
     const act = sb.querySelector(".tree.active");
@@ -1064,26 +1185,13 @@ const XlsxWriter = (() => {
     const parts = [`<a class="jump" data-act="open-scope" data-g="__all__">All activity</a>`,
       k === "month" ? `<span class="here">${esc(monthLabel(x.month))}</span>` : openLink(m)];
     if (k === "week") parts.push(`<span class="here">${esc(weekLabel(w))}</span>`);
-    if (k === "day") parts.push(openLink(w), `<span class="here">${esc(dayLabel(x.day))}</span>`);
     const up = scope(parentKey()), prev = siblingOf(selectedGroup, -1), next = siblingOf(selectedGroup, 1);
     const upName = up ? shortLabel(up) : "All activity";
-    return `<div class="levelnav"><nav class="crumbs" aria-label="Breadcrumb">${parts.join(" › ")}</nav><span class="spacer"></span>
-      <span class="kbd-hint meta" style="font-size:11px"><kbd>U</kbd> up · <kbd>[</kbd> <kbd>]</kbd> prev / next · <kbd>N</kbd> next to review</span>
+    return `<div class="levelnav" title="Shortcuts: U = up, [ / ] = previous / next, N = next ${k} to review"><nav class="crumbs" aria-label="Breadcrumb">${parts.join(" › ")}</nav><span class="spacer"></span>
       <button class="small" data-act="open-scope" data-g="${esc(parentKey())}" title="Up to ${esc(upName)} (U)">↑ ${esc(upName)}</button>
       <button class="small" data-act="open-scope" data-g="${prev ? esc(prev.key) : ""}" ${prev ? "" : "disabled"} title="Previous ${k} ([)">‹ ${prev ? esc(shortLabel(prev)) : "Previous"}</button>
       <button class="small" data-act="open-scope" data-g="${next ? esc(next.key) : ""}" ${next ? "" : "disabled"} title="Next ${k} (])">${next ? esc(shortLabel(next)) : "Next"} ›</button>
-    </div>${siblingStrip()}`;
-  }
-
-  // Day -> the other days of its week; week -> the other weeks of its month. One click to a sibling.
-  function siblingStrip() {
-    const k = scopeKind(), x = scope();
-    if (k !== "day" && k !== "week") return "";
-    const sibs = k === "day" ? weekOfScope().days : scope(MONTH_PREFIX + x.month).weeks;
-    return `<div class="sibstrip" role="tablist" aria-label="${k === "day" ? "Days of this week" : "Weeks of this month"}">${sibs.map((s) => {
-      const n = visCount(s.events);
-      return `<button role="tab" aria-selected="${s.key === selectedGroup}" class="${s.key === selectedGroup ? "on" : ""}" data-act="open-scope" data-g="${esc(s.key)}" ${n ? "" : "disabled"} title="${esc(k === "day" ? dayLabelLong(s.day) : weekLabelLong(s))}">${esc(shortLabel(s))}${reviewMark(s)}${hiMark(s.events)}<span class="count">${fmt(n)}</span></button>`;
-    }).join("")}</div>`;
+    </div>`;
   }
 
   function scopeHeaderHTML(list, noun) {
@@ -1141,17 +1249,44 @@ const XlsxWriter = (() => {
     const kind = scopeKind(), x = scope();
     const list = currentEventList();
     let html = breadcrumb();
-    if (kind === "month" || kind === "week") {
+    if (kind === "month") {
       html += scopeHeaderHTML(list, kind) + scopeTableHTML(kind, x);
     } else {
-      html += scopeHeaderHTML(list, kind === "day" ? "day" : "all");
+      html += scopeHeaderHTML(list, kind === "week" ? "week" : "all");
       if (!list.length) html += `<p class="meta">No events to show.</p>`;
-      for (const ei of list.slice(0, eventsShown)) html += eventHTML(ei);
+      if (kind === "week") {
+        // Days in date order, each with its events (in the chosen sort order inside the day).
+        const byDay = new Map(x.days.map((d) => [d.day, []]));
+        for (const ei of list) byDay.get(events[ei].day)?.push(ei);
+        if (pendingDay) { // make sure the requested day is rendered
+          let before = 0;
+          for (const [day, evs] of byDay) { if (day === pendingDay) break; before += evs.length; }
+          if (before >= eventsShown) eventsShown = before + EVENTS_PAGE;
+        }
+        let shown = 0;
+        for (const d of x.days) {
+          const evs = byDay.get(d.day);
+          if (!evs.length || shown >= eventsShown) continue;
+          html += dayHeadHTML(d, evs);
+          for (const ei of evs) { if (shown++ >= eventsShown) break; html += eventHTML(ei); }
+        }
+      } else for (const ei of list.slice(0, eventsShown)) html += eventHTML(ei);
       if (list.length > eventsShown) {
         html += `<button class="more" id="moreEvents">Show ${fmt(Math.min(EVENTS_PAGE, list.length - eventsShown))} more (${fmt(list.length - eventsShown)} remaining)</button>`;
       }
     }
     $("main").innerHTML = html;
+  }
+
+  // A day inside the week view: heading with its counts and its own Approve.
+  function dayHeadHTML(d, evs) {
+    let hi = 0;
+    for (const ei of evs) if (events[ei].risk.level === "high" && ReviewStore.summarize(events[ei].rows).state !== "approved") hi++;
+    return `<div class="day-head" id="dh-${esc(d.day)}">
+      <b>${esc(dayLabelLong(d.day))}</b><span class="meta">${fmt(evs.length)} event${evs.length === 1 ? "" : "s"}${hi ? ` · <span class="c-high">${fmt(hi)} High not approved</span>` : ""}</span>${reviewMark(d)}
+      <span class="spacer"></span>
+      <button class="small" data-act="approve-scope" data-g="${esc(d.key)}" title="Approve the ${fmt(evs.length)} event(s) of this day${anyFilter() ? " that match the current filters" : ""}">✓ Approve day</button>
+    </div>`;
   }
 
   // Routine automated events (exact pattern seen before) that nobody has approved or denied yet.
@@ -1198,12 +1333,12 @@ const XlsxWriter = (() => {
     if (!passes(ei)) { toast("That event is hidden by the current search / risk filter — clear the filter to see it."); return; }
     let list = view === "grouped" ? currentEventList() : [];
     if (view !== "grouped") setView("grouped");
-    if (list.indexOf(ei) < 0 || scopeKind() === "month" || scopeKind() === "week") { // open the event's day
-      selectScope(DAY_PREFIX + events[ei].day); render(); list = currentEventList();
+    if (list.indexOf(ei) < 0 || scopeKind() === "month") { // open the event's week
+      selectScope(WEEK_PREFIX + events[ei].week); pendingDay = null; render(); list = currentEventList();
     }
     const idx = list.indexOf(ei);
     if (idx < 0) { toast("That event isn't in the current list."); return; }
-    if (idx >= eventsShown) { eventsShown = Math.ceil((idx + 1) / EVENTS_PAGE) * EVENTS_PAGE; renderGrouped(); }
+    if (idx >= eventsShown) { eventsShown = list.length; renderGrouped(); } // (week view renders by day, so show the whole list)
     const det = document.querySelector(`details.event[data-e="${ei}"]`);
     if (!det) return;
     det.open = true; fillEvent(det);
@@ -1313,11 +1448,12 @@ const XlsxWriter = (() => {
     ["financialFields", "Financial fields → High", "A manual change to one of these fields is High, on any record type."],
     ["automationRecordTypes", "Automation record types → Medium", "Manual edits to these, and routine automated runs that change them, are Medium (not bulk-approvable)."],
   ];
+  const RULE_NAME = Object.fromEntries(RULE_FIELDS.map(([k, label]) => [k, label.replace(/ →.*$/, "")]));
   const countsLine = (n) => `${fmt(n.high)} High · ${fmt(n.medium)} Medium · ${fmt(n.low)} Low · ${fmt(n.routine)} routine automated`;
   const arrow = (a, b) => (a === b ? fmt(a) : `${fmt(a)} → <b>${fmt(b)}</b>`);
   const diffLine = (a, b) => `High ${arrow(a.high, b.high)} · Medium ${arrow(a.medium, b.medium)} · Low ${arrow(a.low, b.low)} · routine ${arrow(a.routine, b.routine)}`;
 
-  function openRules(note = "") {
+  function openRules(note = "", focus = null) {
     const r = RiskRules.get();
     $("rulesMeta").textContent = RiskRules.isDefault() ? "· default" : `· edited · ${RiskRules.id()}`;
     $("rulesBody").innerHTML = `
@@ -1340,6 +1476,20 @@ const XlsxWriter = (() => {
       </form>
       ${events.length ? `<div class="std-meta">This file now: ${countsLine(riskCounts())} · ${fmt(riskCounts().manual)} manual.</div>` : `<div class="std-meta">Load a file to see the counts.</div>`}`;
     $("stdPanel").hidden = false;
+    if (focus) focusRule(focus);
+  }
+  // Open the panel at the list (and entry) that matched an event, so a false positive is one edit away.
+  function focusRule({ list: key, entries, value }) {
+    const ta = $("rulesForm").querySelector(`textarea[data-k="${key}"]`);
+    if (!ta) return;
+    const label = ta.closest("label");
+    label.classList.add("focus");
+    label.scrollIntoView({ block: "center" });
+    const lines = ta.value.split("\n"), want = (entries[0] || "").toLowerCase();
+    const i = lines.findIndex((l) => l.toLowerCase() === want);
+    ta.focus();
+    if (i >= 0) { const start = lines.slice(0, i).reduce((n, l) => n + l.length + 1, 0); ta.setSelectionRange(start, start + lines[i].length); }
+    $("rulesNote").innerHTML = `This event matched <b>${esc(entries.join(", ") || "—")}</b> in <b>${esc(RULE_NAME[key])}</b> (value: “${esc(value)}”). Remove or reword the entry, then Preview or Save &amp; re-rate.`;
   }
   function closeRules() { $("stdPanel").hidden = true; }
 
@@ -1372,10 +1522,10 @@ const XlsxWriter = (() => {
       <summary>
         ${riskBadge(e.risk)}${originPill(e.risk)}
         <span class="time">${esc(e.date)}</span>
-        ${scopeKind() !== "day" ? `<a class="jump where" data-act="open-scope" data-g="${esc(DAY_PREFIX + e.day)}" title="Open ${esc(dayLabelLong(e.day))} (${esc(weekLabel(scope(WEEK_PREFIX + e.week)))})">${esc(dayLabel(e.day))} ›</a>` : ""}
+        ${scopeKind() === "all" ? `<a class="jump where" data-act="open-scope" data-g="${esc(DAY_PREFIX + e.day)}" title="Open ${esc(dayLabelLong(e.day))} (${esc(weekLabel(scope(WEEK_PREFIX + e.week)))})">${esc(dayLabel(e.day))} ›</a>` : ""}
         ${showName}
         <span class="rtype">${highlight(e.rtype || "(no record type)")}</span>
-        <span class="rec">${highlight(e.record || "(no name)")}</span>
+        <span class="rec" title="${esc(e.record || "")}">${highlight(e.record || "(no name)")}</span>
         <span class="rtype">#${highlight(e.rid)}</span>
         ${ctx}
         <span class="pill">${e.rows.length} change${e.rows.length === 1 ? "" : "s"}</span>
@@ -1395,14 +1545,19 @@ const XlsxWriter = (() => {
 
   function originPill(risk) {
     const t = risk.origin === "manual" ? "Manual" : risk.routine ? "Auto · routine" : "Auto";
-    return ` <span class="pill origin-${risk.origin}${risk.routine ? " routine" : ""}" title="${risk.origin === "manual" ? "Made by a person (UI)" : "Made by an automation (script, import, mass update, system)"}">${t}</span>`;
+    const tag = risk.routine ? "routine" : risk.origin;
+    return ` <span class="pill origin-${risk.origin}${risk.routine ? " routine" : ""} rule-link" data-act="rule-filter" data-tag="${tag}" title="${risk.origin === "manual" ? "Made by a person (UI)" : "Made by an automation (script, import, mass update, system)"}. Click: show only rule:${tag} events">${t}</span>`;
   }
 
   function riskPanelHTML(risk) {
     if (!risk.reasons.length) return `<div class="why low">No risk indicators.</div>`;
     const icon = { role: "Access", money: "Money", pattern: "Pattern", automation: "Script", manual: "Manual", routine: "Routine", size: "Size", history: "History" };
     const lead = `Why ${esc(risk.label.toLowerCase())} risk:`;
-    return `<div class="why ${risk.level}"><b>${lead}</b><ul>${risk.reasons.map((r) => `<li><span class="tag">${icon[r.kind] || "Note"}</span> ${esc(r.text)}</li>`).join("")}</ul></div>`;
+    const tagOf = (r) => r.kind === "pattern" ? (risk.pattern === "new-job" ? "new-automation" : "pattern-change")
+      : r.kind === "history" ? (/^Reverted/.test(r.text) ? "reverted" : "edited-later") : { role: "role", money: "financial", automation: "script", routine: risk.routine ? "routine" : null, manual: "manual", size: "many-fields" }[r.kind];
+    return `<div class="why ${risk.level}"><b>${lead}</b><ul>${risk.reasons.map((r) => { const t = tagOf(r);
+      const edit = (r.rules || []).map((x) => `<a class="jump edit-rule" data-act="edit-rule" data-list="${x.list}" data-entries="${esc(x.entries.join("\u0001"))}" data-value="${esc(x.value)}" title="Open Risk Rules at “${esc(RULE_NAME[x.list])}”, where “${esc(x.entries.join(", "))}” matched">Edit rule</a>`).join(" ");
+      return `<li><span class="tag${t ? " rule-link" : ""}"${t ? ` data-act="rule-filter" data-tag="${t}" title="Show only rule:${t} events"` : ""}>${icon[r.kind] || "Note"}</span> ${esc(r.text)} ${edit}</li>`; }).join("")}</ul></div>`;
   }
 
   // ---------- Review UI (talks to ReviewStore only through row IDs) ----------
@@ -1504,6 +1659,8 @@ const XlsxWriter = (() => {
     const verb = value === ReviewStore.APPROVED ? "Approve" : "Reset";
     let scope = match ? ` matching “${query}”` : "";
     if (riskFiltered()) scope += ` with ${[...riskFilter].map((l) => RiskEngine.LABEL[l]).join(" / ")} risk`;
+    if (ruleQuery.length) scope += ` labelled ${ruleQuery.map((alts) => alts.map((id) => RiskEngine.TAGS.find((t) => t.id === id).label).join(" or ")).join(" + ")}`;
+    if (statusQuery) scope += ` (status ${[...statusQuery].join(" / ")})`;
     if (!confirm(`${verb} ${fmt(list.length)} event(s)${scope} (${fmt(ids.length)} field changes)?`)) return;
     const changed = ReviewStore.setStatus(ids, value);
     toast(`${value === ReviewStore.APPROVED ? "✓ Approved" : "↺ Reset"} ${fmt(changed)} row(s).${value === ReviewStore.APPROVED ? nextLinkHTML(selectedGroup) : ""}`);
@@ -1537,7 +1694,7 @@ const XlsxWriter = (() => {
 
   function renderTable() {
     const idx = [];
-    for (let i = 0; i < rows.length; i++) if ((!match || match[i]) && riskFilter.has(events[rowEvent[i]].risk.level)) idx.push(i);
+    for (let i = 0; i < rows.length; i++) if ((!match || match[i]) && riskFilter.has(events[rowEvent[i]].risk.level) && passesRules(rowEvent[i])) idx.push(i);
     const pages = Math.max(1, Math.ceil(idx.length / TABLE_PAGE));
     tablePage = Math.min(tablePage, pages - 1);
     const start = tablePage * TABLE_PAGE;
@@ -1595,6 +1752,12 @@ const XlsxWriter = (() => {
   $("search").addEventListener("input", () => { clearTimeout(searchTimer); searchTimer = setTimeout(runSearch, 250); });
   $("searchCol").addEventListener("change", runSearch);
   $("clearSearch").addEventListener("click", () => { $("search").value = ""; runSearch(); });
+  $("ruleChips").addEventListener("click", (e) => {
+    const v = e.target.closest("[data-view]");
+    if (v) { applyView(v.dataset.view); return; }
+    const c = e.target.closest("[data-rule]");
+    if (c) toggleRule(c.dataset.rule);
+  });
 
   // Export (Scope 5)
   $("exportBtn").addEventListener("click", openExport);
@@ -1646,14 +1809,13 @@ const XlsxWriter = (() => {
     if (e.target.closest("[data-toggle]")) { toggleExpand(key); renderSidebar(); focusTree(key); return; }
     // clicking the already-selected month / week collapses it; otherwise select (and expand) it
     if (kind === "month" && selectedGroup === key && expandedMonths.has(x.month)) { expandedMonths.delete(x.month); renderSidebar(); return; }
-    if (kind === "week" && selectedGroup === key && expandedWeeks.has(x.id)) { expandedWeeks.delete(x.id); renderSidebar(); return; }
     goScope(key);
     focusTree(key);
   });
 
   function toggleExpand(key, force) {
     const kind = scopeKind(key), x = scope(key);
-    const set = kind === "month" ? expandedMonths : kind === "week" ? expandedWeeks : null;
+    const set = kind === "month" ? expandedMonths : null; // weeks are leaves: their days are headings in the week view
     if (!set) return false;
     const id = kind === "month" ? x.month : x.id, open = set.has(id);
     if (force === open) return false;
@@ -1690,7 +1852,7 @@ const XlsxWriter = (() => {
   // Page shortcuts (not while typing): U = up a level, [ / ] = previous / next on the same level, N = next to review.
   document.addEventListener("keydown", (e) => {
     if (!rows.length || e.ctrlKey || e.metaKey || e.altKey) return;
-    if (e.target.closest("input, textarea, select, [contenteditable]") || !$("exportPanel").hidden) return;
+    if (e.target.closest?.("input, textarea, select, [contenteditable]") || !$("exportPanel").hidden) return;
     const k = scopeKind();
     if (e.key === "u" || e.key === "U") { if (k && k !== "all") goScope(parentKey()); }
     else if (e.key === "[" || e.key === "]") { const s = siblingOf(selectedGroup, e.key === "[" ? -1 : 1); if (s) goScope(s.key); }
@@ -1725,6 +1887,8 @@ const XlsxWriter = (() => {
         case "open-scope": goScope(act.dataset.g); break;
         case "approve-scope": setScopeStatus(act.dataset.g, ReviewStore.APPROVED); break;
         case "open-rules": openRules(); break;
+        case "rule-filter": if (!ruleTokenOn(act.dataset.tag)) toggleRule(act.dataset.tag); break;
+        case "edit-rule": openRules("", { list: act.dataset.list, entries: act.dataset.entries ? act.dataset.entries.split("\u0001") : [], value: act.dataset.value }); break;
         case "rules-preview": previewRules(); break;
         case "rules-reset": if (confirm("Put back the default risk rules and re-rate every event?")) saveRules(RiskRules.DEFAULT); break;
       }

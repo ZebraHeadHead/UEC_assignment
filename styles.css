@@ -361,3 +361,38 @@ td { border-bottom: 1px solid #e6e9ed; }
 .ai-box { box-shadow: 0 4px 18px rgba(0,0,0,.22); border: 1px solid #aab4bf; padding: 0 0 12px; }
 .ai-box h3 { background: var(--head); color: #fff; font-size: 14px; font-weight: 600; padding: 10px 16px; margin: 0 0 8px; }
 .ai-box > *:not(h3) { margin-left: 16px; margin-right: 16px; }
+
+/* Risk Rule label filter */
+#toolbar .rule-chips { order: 99; flex-basis: 100%; display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.chips-label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .3px; color: var(--muted); margin-right: 4px; }
+.chip.rule { color: #3b4a59; border-color: #d3d9e0; }
+.chip.rule.on { background: var(--accent-soft); color: var(--accent); border-color: #c5d6ea; }
+.chip-sep { width: 1px; height: 14px; background: var(--border); margin: 0 4px; }
+.rule-chips .err { color: var(--bad); font-size: 12px; }
+.rule-link { cursor: pointer; }
+.rule-link:hover { outline: 1px solid var(--accent); }
+
+/* Week view: days as headings */
+.day-head { display: flex; align-items: center; gap: 8px; margin: 14px 0 6px; padding: 4px 2px; border-bottom: 2px solid #d3d8de; position: sticky; top: 0; background: var(--bg); z-index: 1; }
+.day-head b { font-size: 13px; }
+.day-head .meta { color: var(--muted); font-size: 12px; }
+.day-head .spacer { flex: 1; }
+
+/* Event rows stay on one line: long record names / types are cut with … (full text in the tooltip / when opened) */
+details.event > summary { flex-wrap: nowrap; }
+details.event > summary > * { flex-shrink: 0; }
+details.event > summary > .rec, details.event > summary > .rtype { flex-shrink: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+details.event > summary > .rec { flex-basis: auto; max-width: 32ch; }
+
+/* Views + Edit rule */
+.chip.view { color: #2c3a48; border-color: #c5ccd4; font-weight: 600; }
+.chip.view.on { background: var(--accent); color: #fff; border-color: var(--accent); }
+.chip-sep.wide { margin: 0 10px; }
+a.edit-rule { font-size: 11px; margin-left: 6px; color: var(--accent); cursor: pointer; text-decoration: underline; }
+.rules-form label.focus { background: #fff8d6; outline: 2px solid #f0c24b; padding: 4px; }
+/* …but when the event list is narrow (e.g. Risk Rules panel open), let rows wrap rather than cut off the buttons */
+#main { container-type: inline-size; container-name: main; }
+@container main (max-width: 1100px) {
+  details.event > summary { flex-wrap: wrap; }
+  details.event > summary > .spacer { flex-basis: 0; }
+}
