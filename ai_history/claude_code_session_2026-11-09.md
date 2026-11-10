@@ -405,6 +405,33 @@ Solution: add expandable Weeks inside each month. Expanding a week calls the API
    - **Earlier suites still pass:** Month › Week › Day (29), Scope 2 (28) and Export (16).
    - **Screenshot:** a headless Chrome screenshot confirmed the day view.
 
+## Prompt 18
+> commit the changes and run it
+
+**What the AI did:** Committed Prompt 17 as `3d28a75` and opened `index.html` in the browser.
+
+## Prompt 19
+> add a recap/input section acting as a chat bot to show current standard of marking high medium low. Allow user to enter/update the standards and reload the AI review tool
+
+**What the AI changed (in `index.html`):**
+1. **The standard is now data, not hard-coded prompt text.** The `AIRecap` module keeps a standard with four sections: High / Medium / Low definitions plus "Priorities & notes".
+   - The default is the wording that was previously hard-coded in the prompt.
+   - Both the labeling prompt (Haiku 5.5) and the high-risk review prompt (Opus 5.5) are built from it.
+   - An edited standard is saved in this browser's localStorage; the default isn't stored.
+2. **Saved results are tied to a standard.** Each standard has a short ID, and saved labels and reviews only count under the standard they were made with.
+   - Switching back to an earlier standard brings its saved labels back with no new calls.
+   - A labeling run that finishes after the standard changed is ignored.
+3. **"Risk Standards" chat panel** (header button, plus a "Standard" button on the Claude review card):
+   - **On opening:** shows the current High / Medium / Low / notes, whether it's the default or edited, and how many weeks are labelled under it. If a week is open, it also offers "Re-run AI review" for that week.
+   - **Chat (needs the API key):** questions get an answer. A change request gets a proposal with the changed sections marked and the old text struck through, plus **Apply & reload AI review**, **Discard** and **Edit first**. Nothing changes until you click Apply. This uses Claude Opus 5.5 with structured output, sending only the standard and the recent chat, never log data.
+   - **Without a key:** typing "show" or "reset" still works, and **Edit directly** opens a form with the four sections. Empty High / Medium / Low are rejected.
+   - **Apply:** saves the standard and sets every event back to "Unrated" unless it already has labels made under that standard. An open week is re-labelled right away (with auto-run on); otherwise the chat says to open a week.
+4. **Testing:**
+   - **New Risk Standards suite (fake SDK):** all 38 checks pass, covering show / edit / no-key handling, persistence, prompts built from the standard, chat request shape and history, proposals, Apply re-labelling only the open week, reset restoring labels with no calls, Re-run, Esc and shortcuts.
+   - **Regression:** navigation (38), Month › Week › Day (29), Scope 2 (28), Export (16) and the real-SDK mock (5) all pass.
+   - **Screenshot:** a headless Chrome screenshot confirmed the panel.
+   - Not tested against the real API.
+
 ---
 
 ## Notes on what I used / did not use
