@@ -396,3 +396,7 @@ a.edit-rule { font-size: 11px; margin-left: 6px; color: var(--accent); cursor: p
   details.event > summary { flex-wrap: wrap; }
   details.event > summary > .spacer { flex-basis: 0; }
 }
+
+/* Day heading "High not approved" badge (same as the sidebar) */
+.day-head .hi { background: var(--bad); color: #fff; font-size: 10px; font-weight: 700; padding: 0 5px; }
+.day-head .done { color: var(--ok); } .day-head .den { color: var(--bad); }

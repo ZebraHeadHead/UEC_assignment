@@ -760,7 +760,8 @@ const XlsxWriter = (() => {
       await new Promise((r) => setTimeout(r, 20));
       load(table);
       const ms = Math.round(performance.now() - t0);
-      $("fileInfo").textContent = `${file.name} · ${fmt(rows.length)} rows · ${fmt(events.length)} events · loaded in ${(ms / 1000).toFixed(1)} s`;
+      $("fileInfo").textContent = `${file.name} · ${fmt(events.length)} events`;
+      $("fileInfo").title = `${fmt(rows.length)} rows · ${fmt(events.length)} events · ${fmt(groups.length)} days · loaded in ${(ms / 1000).toFixed(1)} s`;
     } catch (e) {
       showError(e.message || String(e));
     }
@@ -1048,7 +1049,8 @@ const XlsxWriter = (() => {
     const t = ReviewStore.totals();
     const pct = (n) => (t.total ? (n / t.total) * 100 : 0);
     $("progress").innerHTML = `<span class="bar"><i style="width:${pct(t.approved)}%;background:var(--ok)"></i><i style="width:${pct(t.denied)}%;background:var(--bad)"></i></span>
-      <span>${fmt(t.approved + t.denied)} / ${fmt(t.total)} rows reviewed · <span style="color:var(--ok)">${fmt(t.approved)} approved</span> · <span style="color:var(--bad)">${fmt(t.denied)} denied</span></span>`;
+      <span>${Math.floor(pct(t.approved + t.denied))}% reviewed</span>`;
+    $("progress").title = `${fmt(t.approved + t.denied)} of ${fmt(t.total)} rows reviewed · ${fmt(t.approved)} approved · ${fmt(t.denied)} denied`;
   }
 
   function renderRiskChips() {
@@ -1067,12 +1069,12 @@ const XlsxWriter = (() => {
       if (!riskFilter.has(events[i].risk.level) || (match && !eventHits(events[i])) || !passesRules(i)) continue;
       for (const t of events[i].risk.tags) counts[t]++;
     }
-    let html = viewsHTML() + `<span class="chips-label" title="Filter by Risk Rule label. Also: type rule:manual, rule:financial, rule:pattern … (rule:a,b = a or b; status:open) in the search box">Rules</span>`, group = "";
+    let html = viewsHTML() + `<span class="chips-label" title="Filter by Risk Rule label. Also: type rule:manual, rule:financial, rule:pattern, rule:reverted, rule:edited-later, rule:many-fields … (rule:a,b = a or b; status:open) in the search box">Rules</span>`, group = "";
     for (const t of RiskEngine.TAGS) {
       const on = ruleTokenOn(t.id);
-      if (!on && !counts[t.id]) continue;
+      if (!on && (!counts[t.id] || t.group === "History")) continue;
       if (t.group !== group) { if (group) html += `<span class="chip-sep"></span>`; group = t.group; }
-      html += `<button class="chip rule ${on ? "on" : ""}" data-rule="${t.id}" title="${on ? "Remove" : "Show only"} “${esc(t.label)}” events (rule:${t.id})">${esc(t.label)} <b>${fmt(counts[t.id])}</b></button>`;
+      html += `<button class="chip rule ${on ? "on" : ""}" data-rule="${t.id}" title="${on ? "Remove" : "Show only"} “${esc(t.label)}” events: ${fmt(counts[t.id])} (rule:${t.id})">${esc(t.label)}</button>`;
     }
     if (ruleUnknown.length) html += ` <span class="err">Unknown: ${esc(ruleUnknown.join(", "))}. Rules: ${RiskEngine.TAGS.map((t) => t.id).join(", ")}; status: open, approved, denied, mixed.</span>`;
     else if (rulesFiltered()) html += ` <button class="small" data-rule="__clear__" title="Remove all rule: labels from the search">✕ Clear rules</button>`;
@@ -1112,10 +1114,6 @@ const XlsxWriter = (() => {
     renderProgress();
     renderRiskChips();
     renderRuleChips();
-    if (!anyFilter()) { $("stats").textContent = `${fmt(rows.length)} rows · ${fmt(events.length)} events · ${fmt(groups.length)} days`; return; }
-    let ev = 0, n = 0;
-    for (let i = 0; i < events.length; i++) if (passes(i)) { ev++; n += match ? eventHits(events[i]) : events[i].rows.length; }
-    $("stats").textContent = match ? `${fmt(n)} matching rows in ${fmt(ev)} events` : `${fmt(ev)} events shown · ${fmt(n)} field changes`;
   }
 
   // Review marks for a scope: ✓ all approved, ● has denials, % partly reviewed; plus unapproved High count.
@@ -1123,7 +1121,7 @@ const XlsxWriter = (() => {
     const st = ReviewStore.summarize(x.rowIds);
     return st.state === "approved" ? `<span class="done" title="All approved">✓</span>`
       : st.denied ? `<span class="den" title="${fmt(st.denied)} denied rows">●</span>`
-      : st.state === "mixed" ? `<span class="count" title="${esc(st.label)}">${Math.floor(((st.approved + st.denied) / st.total) * 100)}%</span>` : "";
+      : "";
   }
   function hiMark(idx) {
     let hi = 0;
@@ -1195,34 +1193,22 @@ const XlsxWriter = (() => {
   }
 
   function scopeHeaderHTML(list, noun) {
+    const total = scopeKind() === "all" ? events.length : scope() ? scope().events.length : 0;
+    const routine = routineOpen(list).length;
     return `<div class="group-head">
       <h2>${esc(scopeTitle())}</h2>
-      <span class="meta">${fmt(list.length)} events · ${fmt(list.reduce((n, ei) => n + events[ei].rows.length, 0))} field changes</span>
-      <span id="listStatus">${listStatusHTML(list)}</span>
+      <span class="meta">${anyFilter() ? `${fmt(list.length)} of ${fmt(total)} events` : `${fmt(list.length)} events`}</span>
       <span class="spacer"></span>
-      <button class="small primary" data-act="approve-list" ${list.length ? "" : "disabled"} title="Approve every event in this ${noun}${anyFilter() ? " that matches the current search / risk filter" : ""}">✓ Approve ${noun}${anyFilter() ? " (filtered)" : ""} (${fmt(list.length)})</button>
-      <button class="small" data-act="approve-routine" ${routineOpen(list).length ? "" : "disabled"} title="Approve the automated events in this ${noun} whose exact pattern has run before${anyFilter() ? " (matching the current search / risk filter)" : ""}. New automations, pattern changes, script / workflow edits and denied events are left for you.">✓ Approve routine automated (${fmt(routineOpen(list).length)})</button>
-      <button class="small" data-act="reset-list" ${list.length ? "" : "disabled"} title="Set every event in this ${noun} back to Not Reviewed">Reset</button>
+      <button class="small primary" data-act="approve-list" ${list.length ? "" : "disabled"} title="Approve the ${fmt(list.length)} event(s) shown${anyFilter() ? " (matching the current filters)" : ""}">✓ Approve ${anyFilter() ? "shown" : noun}</button>
+      ${routine ? `<button class="small" data-act="approve-routine" title="Approve the ${fmt(routine)} automated event(s) here whose exact pattern has run before. New automations, pattern changes, script / workflow edits and denied events are left for you.">✓ Approve routine automated</button>` : ""}
+      <button class="small" data-act="reset-list" ${list.length ? "" : "disabled"} title="Set the ${fmt(list.length)} event(s) shown back to Not Reviewed">Reset</button>
     </div>`;
-  }
-
-  // Small day links inside a month's week row: jump straight to a day.
-  function dayLinksHTML(w) {
-    return `<div class="kids">${w.days.map((d) => {
-      const n = visCount(d.events);
-      if (!n) return "";
-      let hi = 0;
-      for (const ei of d.events) if (events[ei].risk.level === "high" && (!anyFilter() || passes(ei)) && ReviewStore.summarize(events[ei].rows).state !== "approved") hi++;
-      const ok = !scopePending(d);
-      return openLink(d, dayLabel(d.day).replace(/,/g, ""), hi ? "has-hi" : ok ? "all-ok" : "")
-        .replace("<a ", `<a title="${esc(dayLabelLong(d.day))}: ${fmt(n)} events${hi ? ` · ${fmt(hi)} High not approved` : ""}${ok ? " · all approved" : ""}" `);
-    }).join("")}</div>`;
   }
 
   // Month -> table of weeks; week -> table of days.
   function scopeTableHTML(kind, x) {
     const children = kind === "month" ? x.weeks : x.days, childNoun = kind === "month" ? "week" : "day";
-    let html = `<table class="scope-table"><thead><tr><th>${kind === "month" ? "Week" : "Day"}</th><th class="num">Events</th><th class="num">High</th><th class="num">Medium</th><th class="num">Low</th><th class="num" title="Routine automated events not approved yet">Routine open</th><th>Review progress</th><th></th></tr></thead><tbody>`;
+    let html = `<table class="scope-table"><thead><tr><th>${kind === "month" ? "Week" : "Day"}</th><th class="num">Events</th><th class="num" title="High-risk events not yet approved">High open</th><th>Reviewed</th><th></th></tr></thead><tbody>`;
     for (const c of children) {
       const idx = anyFilter() ? c.events.filter(passes) : c.events;
       const n = { high: 0, medium: 0, low: 0, routine: 0 }, rv = { approved: 0, denied: 0 };
@@ -1230,15 +1216,15 @@ const XlsxWriter = (() => {
         n[events[ei].risk.level]++;
         const st = ReviewStore.summarize(events[ei].rows).state;
         if (st === "approved") rv.approved++; else if (st === "denied") rv.denied++;
-        if (events[ei].risk.routine && st !== "approved" && st !== "denied") n.routine++;
+        if (events[ei].risk.level === "high" && st !== "approved") n.highOpen = (n.highOpen || 0) + 1;
       }
       const pct = (v) => (idx.length ? (v / idx.length) * 100 : 0);
       const label = kind === "month" ? weekLabel(c) : dayLabel(c.day);
       html += `<tr class="${idx.length ? "" : "empty-row"}">
-        <td><a class="jump" data-act="open-scope" data-g="${esc(c.key)}">${esc(label)}</a>${kind === "month" ? dayLinksHTML(c) : ""}</td>
+        <td><a class="jump" data-act="open-scope" data-g="${esc(c.key)}">${esc(label)}</a></td>
         <td class="num">${fmt(idx.length)}</td>
-        <td class="num ${n.high ? "c-high" : ""}">${fmt(n.high)}</td><td class="num ${n.medium ? "c-medium" : ""}">${fmt(n.medium)}</td><td class="num">${fmt(n.low)}</td><td class="num muted">${fmt(n.routine)}</td>
-        <td><span class="minibar" title="${fmt(rv.approved)} approved · ${fmt(rv.denied)} denied of ${fmt(idx.length)}"><i style="width:${pct(rv.approved)}%;background:var(--ok)"></i><i style="width:${pct(rv.denied)}%;background:var(--bad)"></i></span> ${fmt(rv.approved + rv.denied)}/${fmt(idx.length)}</td>
+        <td class="num ${n.highOpen ? "c-high" : "muted"}" title="${fmt(n.high)} High · ${fmt(n.medium)} Medium · ${fmt(n.low)} Low">${n.highOpen ? fmt(n.highOpen) : "—"}</td>
+        <td><span class="minibar" title="${fmt(rv.approved)} approved · ${fmt(rv.denied)} denied of ${fmt(idx.length)}"><i style="width:${pct(rv.approved)}%;background:var(--ok)"></i><i style="width:${pct(rv.denied)}%;background:var(--bad)"></i></span> ${Math.floor(pct(rv.approved + rv.denied))}%</td>
         <td class="actions-cell"><button class="small" data-act="open-scope" data-g="${esc(c.key)}">Open</button> <button class="small" data-act="approve-scope" data-g="${esc(c.key)}" ${idx.length ? "" : "disabled"}>✓ Approve ${childNoun}</button></td>
       </tr>`;
     }
@@ -1283,7 +1269,7 @@ const XlsxWriter = (() => {
     let hi = 0;
     for (const ei of evs) if (events[ei].risk.level === "high" && ReviewStore.summarize(events[ei].rows).state !== "approved") hi++;
     return `<div class="day-head" id="dh-${esc(d.day)}">
-      <b>${esc(dayLabelLong(d.day))}</b><span class="meta">${fmt(evs.length)} event${evs.length === 1 ? "" : "s"}${hi ? ` · <span class="c-high">${fmt(hi)} High not approved</span>` : ""}</span>${reviewMark(d)}
+      <b title="${fmt(evs.length)} event(s)">${esc(dayLabelLong(d.day))}</b>${hi ? `<span class="hi" title="${fmt(hi)} High-risk event(s) not yet approved">${fmt(hi)}</span>` : ""}${reviewMark(d)}
       <span class="spacer"></span>
       <button class="small" data-act="approve-scope" data-g="${esc(d.key)}" title="Approve the ${fmt(evs.length)} event(s) of this day${anyFilter() ? " that match the current filters" : ""}">✓ Approve day</button>
     </div>`;
@@ -1565,12 +1551,6 @@ const XlsxWriter = (() => {
     return `<span class="pill st-${st.state}">${esc(st.label)}</span>`;
   }
 
-  function listStatusHTML(list) {
-    const ids = [];
-    for (const ei of list) for (const r of events[ei].rows) ids.push(r);
-    return ids.length ? statusPill(ReviewStore.summarize(ids)) : "";
-  }
-
   function eventControlsHTML(ei, st = ReviewStore.summarize(events[ei].rows)) {
     const n = ReviewStore.commentsFor(events[ei].rows).length;
     return `${statusPill(st)}
@@ -1607,9 +1587,16 @@ const XlsxWriter = (() => {
       if (t) t.scrollTop = top;
       return;
     }
-    const ls = $("listStatus");
-    if (ls) ls.innerHTML = listStatusHTML(currentEventList());
-    if (scopeKind() === "month" || scopeKind() === "week") { renderGrouped(); return; } // tables show review progress
+    const k = scopeKind();
+    if (k === "month") { renderGrouped(); return; } // the weeks table shows review progress
+    // Week / All activity: refresh the headings in place, so open events stay open.
+    const list = currentEventList();
+    const gh = document.querySelector(".group-head");
+    if (gh) gh.outerHTML = scopeHeaderHTML(list, k === "week" ? "week" : "all");
+    if (k === "week") document.querySelectorAll(".day-head").forEach((h) => {
+      const d = scope(DAY_PREFIX + h.id.slice(3));
+      if (d) h.outerHTML = dayHeadHTML(d, list.filter((ei) => events[ei].day === d.day));
+    });
     document.querySelectorAll("details.event").forEach((det) => {
       const ei = +det.dataset.e;
       const st = ReviewStore.summarize(events[ei].rows);
