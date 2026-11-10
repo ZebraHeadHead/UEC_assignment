@@ -11,10 +11,19 @@
   2. Two user can interact with the system at the same time. 
     So it's better in group by USER -> Time -> Record IDs(unreadable), Record(Readable)
   
+  3. Using Claude noticed following patterns:
+    User A: a third of activity falls between 00:00 and 05:00, and 14% on weekends, so it’s mostly machine activity.
+    
+    User B: 92% falls between 12:00 and 17:00 with no weekends, which looks like a person working office hours who uses big CSV imports (13.9k rows).
+    
+    User C: 45% between 00:00 and 05:00, which fits the overnight SFTP job.
+    
+    User D: 18 rows in office hours, so a person.
   
 
 ## How you defined a group, and the trade-offs: groups that are too large hide things, and groups that are too small make the review impossible.
-  1. My fisrt approach is to divide groups in chronological orders.#DROPPED
+  1. My fisrt approach is to divide groups in chronological orders.
+     #DROPPED
     
     02/2026 User C activities(Y/N): 
       TIME 1 (Record Type) Record #Record ID  APPROVE (Y/N) [add note?]
@@ -27,13 +36,21 @@
       TIME 2 (Record Type) Record #Record ID  APPROVE (Y/N) [add note?]
         Field Name update: xxxx -> yyyy (check mark)
         [Summary]
-    
-    With this approach everytime the system shows a list of acitivities done by user in a month, and provide a summary of each event(see in next seciton). Which I believe is a decent amount numbers per group.
+   Which receated too fine grouping with still thousands of groups, makes it hard to review.
+
+  2. Decide to update logic to the prioritize events based on two bases. 
+  
+    For manual inputs involves role change and financial. High Priority.
+
+    For automated events, checks when the automation pattern changes. As a change of script would impact the most or is when unauthorized event happens.
+  
 
      
 
 ## What a reviewer needs in order to make a decision, and how your interface supports it.
-    Within the summary, I decide to encoprate an LLM to conduct the preliminary review. At the end of each event, create a new summary. And If the acitivies is flagged as risky. Show a warning for the review to expand and see the events.
+     
+
+
 # Step 2
 
 
@@ -52,7 +69,8 @@ Functional Requirements:
     2.2: User can flag events as Approved or Denied.
     2.4: User can comment on cases.
     2.5: User can search events based on 
-      Date	Name	Role	Context	Record Type	Record ID	Record	Type	Field	Old Value	New Value	Line Id	Line Transaction Id
+      Date	Name	Role	Context	Record Type	Record ID	Record Type	Field	Old Value	New Value	Line Id	Line Transaction Id
+  
   3. Export:
     3.1: User can export updated CSV.
     3.2: User can export only part of the CSV based on Date and Names and case statuses.
@@ -62,36 +80,3 @@ Non-functional Requirements:
   1. App can load 100k+ rows without crashing.
 
 ## Building reviewer
-
-SCOPE 1:
-
-Html file that allows drag and drop CSV files. Expect the file to be formatted as system_notes_sample.xlsx in this repo. 
-
-User can search, and see different logs. all the other functions' buttons will exist but not in use. When clicked show a msg clearly saying its in progress.
-
-SCOPE 2:
-
-Impletment the approve deny comment section. Separately it from the search and filter function, so later if group standard changes, ie changing it to time and risky level based. This function won't be affected.
-
-
-SCOPE 3: 
-
-Implement the risk based filtering, assume that things involves cash-flow would be the important ones. Followed by ones that invovle massive fields or quoted in later 
-//The labelling standard, used for every event: LABEL_SYSTEM at index.html:683
-
-SCOPE 4: 
-
-Implement the AI recap feature,instead of hit generate summary, auto summary at the end of the group. Note: grouping filter can be changed, so only sum it after grouping is completed. 
-
-SCOPE 5#:
-
-Implement Export function. 
-Should be able to choose based on Time period/User/ Item Status(approved pending or denied). the output doc will be a xslx document similar to input document. Add a column at the end to indicate cases status.
-
-
-## Updates
-
-1. listing them by event creates too much items to review. instead, list them by days. 
-2. Calling api on entire month creates less attention to details.
-
-Solution: Instead, create another level of expandable UI being Weeks inside each month. Upon expanding the week, calls api review the weeks event. and inside the week menu is grouped by days. User can then click on each day to see the current list of events and their level. Add button to allow approve by days, week and month.

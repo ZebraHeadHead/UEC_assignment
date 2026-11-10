@@ -1,0 +1,3 @@
+# Sample / client data: keep out of the repo
+*.xlsx
+*.csv
