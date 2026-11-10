@@ -326,6 +326,35 @@
   .ai-box > *:not(h3) { margin-left: 16px; margin-right: 16px; }
   .export-box fieldset { border-color: #d3d8de; }
   #toast { background: #1f2c3a; box-shadow: 0 3px 12px rgba(0,0,0,.25); border-left: 4px solid #7aa6d6; }
+  #toast.show.has-action { pointer-events: auto; }
+  #toast a.jump { color: #9cc4f0; text-decoration: underline; cursor: pointer; margin-left: 8px; font-weight: 600; }
+
+  /* Level navigation (parent / sibling / child access) */
+  .levelnav { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: 0 0 6px; }
+  .levelnav .crumbs { margin: 0; }
+  .levelnav .spacer { flex: 1; }
+  .levelnav kbd, .kbd-hint kbd { font: 10px/1 Consolas, monospace; border: 1px solid #c5ccd4; padding: 1px 4px; background: #f7f8fa; color: #4a5562; }
+  .crumbs a.jump, .scope-table a.jump, .event a.jump { color: var(--accent); cursor: pointer; text-decoration: none; }
+  .crumbs a.jump:hover, .scope-table a.jump:hover, .event a.jump:hover { text-decoration: underline; }
+  .crumbs .here { color: var(--text); font-weight: 600; }
+  .sibstrip { display: flex; gap: 0; flex-wrap: wrap; margin: 0 0 10px; border: 1px solid var(--border); background: var(--panel); }
+  .sibstrip button { border: 0; border-right: 1px solid var(--border); padding: 4px 10px; font-size: 12px; display: inline-flex; gap: 6px; align-items: center; background: transparent; }
+  .sibstrip button:hover { background: #f1f4f7; }
+  .sibstrip button.on { background: var(--accent-soft); color: var(--accent); font-weight: 600; box-shadow: inset 0 -2px 0 var(--accent); }
+  .sibstrip button:disabled { color: #a0a9b3; cursor: default; }
+  .sibstrip .count { color: var(--muted); }
+  .sibstrip .hi { background: var(--bad); color: #fff; font-size: 10px; padding: 0 4px; }
+  .sibstrip .done { color: var(--ok); }
+  .sibstrip .den { color: var(--bad); }
+  .scope-table .kids { margin-top: 3px; display: flex; gap: 4px; flex-wrap: wrap; font-size: 11px; }
+  .scope-table .kids a.jump { border: 1px solid #d3d8de; padding: 0 5px; background: #fafbfc; }
+  .scope-table .kids a.jump.has-hi { border-color: #f3c1c1; color: var(--bad); }
+  .scope-table .kids a.jump.all-ok { border-color: #b7dfc3; color: var(--ok); }
+  .event .where { font-size: 11px; border: 1px solid #d3d8de; padding: 0 5px; background: #fafbfc; }
+  #sidebar .tree .caret { cursor: pointer; padding: 0 2px; }
+  #sidebar .tree .caret:hover { color: var(--accent); }
+  #sidebar .tree:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+  .rawtable a.jump { color: var(--accent); cursor: pointer; }
 </style>
 </head>
 <body>
@@ -342,10 +371,10 @@
 <div id="aiPanel" hidden>
   <div class="ai-box">
     <h3>AI Settings</h3>
-    <p>Each group always gets a <b>local recap</b> at the end, computed in this page; no data leaves your computer. With a Claude API key, expanding a <b>week</b> in the sidebar has Claude <b>label every event</b> of that week High / Medium / Low (model <code id="aiLabelModel"></code>) and then <b>review the High-risk ones</b> at the top of the page (model <code id="aiModel"></code>). Weeks you haven't opened stay “Unrated”.</p>
+    <p>Each group always gets a <b>local recap</b> at the end, computed in this page; no data leaves your computer. With a Claude API key, opening a <b>week</b> (sidebar, weeks table or breadcrumb) has Claude <b>label every event</b> of that week High / Medium / Low (model <code id="aiLabelModel"></code>) and then <b>review the High-risk ones</b> at the top of the page (model <code id="aiModel"></code>). Weeks you haven't opened stay “Unrated”.</p>
     <p class="note">When a week is labelled, its events are sent to Anthropic in batches (up to 8 field changes per event, values cut to 40 characters); the review then sends up to 60 of the week's High events. Values are truncated, and passwords, secrets, keys and bank/account numbers are redacted. The key is stored only in this browser (localStorage). Don't host this page publicly with a key saved.</p>
     <label>API key <input id="aiKey" type="password" autocomplete="off" spellcheck="false" placeholder="sk-ant-…"></label>
-    <label class="chk"><input id="aiAuto" type="checkbox"> Label & review automatically when a week is expanded</label>
+    <label class="chk"><input id="aiAuto" type="checkbox"> Label & review automatically when a week is opened</label>
     <div class="row">
       <span id="aiKeyState" class="meta"></span>
       <span class="spacer"></span>
@@ -1133,9 +1162,11 @@ const XlsxWriter = (() => {
   function toast(html) {
     const t = $("toast");
     t.innerHTML = html;
+    const action = !!t.querySelector("[data-act]"); // clickable toasts (e.g. "Next day ›") stay longer
+    t.classList.toggle("has-action", action);
     t.classList.add("show");
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => t.classList.remove("show"), 2600);
+    toastTimer = setTimeout(() => t.classList.remove("show"), action ? 6000 : 2600);
   }
   function wip(feature) {
     toast(`<b>${esc(feature)}</b> is in progress — not available yet (Scope 1 is view & search only).`);
@@ -1510,6 +1541,42 @@ const XlsxWriter = (() => {
     return k === "all" ? "All activity" : k === "month" ? monthLabel(x.month) : k === "week" ? weekLabelLong(x) : k === "day" ? dayLabelLong(x.day) : "";
   };
 
+  // ---------- Level navigation: parent / siblings / next to review ----------
+  const shortLabel = (x, k = scopeKind(x.key)) => k === "month" ? monthLabel(x.month) : k === "week" ? weekLabel(x) : k === "day" ? dayLabel(x.day) : "All activity";
+  const levelList = (k) => (k === "month" ? months : k === "week" ? weeks : k === "day" ? groups : null);
+  function parentKey(key = selectedGroup) {
+    const k = scopeKind(key), x = scope(key);
+    return k === "day" ? WEEK_PREFIX + x.week : k === "week" ? MONTH_PREFIX + x.month : k === "month" ? "__all__" : null;
+  }
+  // Previous / next scope on the same level, in date order (crosses week / month boundaries); skips scopes hidden by the filters.
+  function siblingOf(key, dir) {
+    const arr = levelList(scopeKind(key));
+    if (!arr) return null;
+    for (let i = arr.indexOf(scope(key)) + dir; i >= 0 && i < arr.length; i += dir) if (!anyFilter() || visCount(arr[i].events)) return arr[i];
+    return null;
+  }
+  // Rows of a scope's events that pass the current filters.
+  const scopeRowIds = (x) => { if (!anyFilter()) return x.rowIds; const ids = []; for (const ei of x.events) if (passes(ei)) for (const r of events[ei].rows) ids.push(r); return ids; };
+  const scopePending = (x) => { const ids = scopeRowIds(x); return ids.length && ReviewStore.summarize(ids).state !== "approved"; };
+  // Next scope on the same level (after `key`) that still has events to review.
+  function nextPending(key) {
+    for (let s = siblingOf(key, 1); s; s = siblingOf(s.key, 1)) if (scopePending(s)) return s;
+    return null;
+  }
+  function goScope(key) {
+    if (!key) return;
+    selectScope(key);
+    setView("grouped");
+    render();
+    $("main").scrollTop = 0;
+  }
+  function setView(v) {
+    view = v;
+    $("tabGrouped").classList.toggle("active", v === "grouped");
+    $("tabTable").classList.toggle("active", v === "table");
+  }
+  const openLink = (x, text = shortLabel(x), cls = "") => `<a class="jump ${cls}" data-act="open-scope" data-g="${esc(x.key)}">${esc(text)}</a>`;
+
   // ---------- Rendering ----------
   function render() {
     renderStats();
@@ -1556,30 +1623,41 @@ const XlsxWriter = (() => {
 
   function renderSidebar() {
     const sel = selectedGroup;
-    let html = `<div class="tree all ${sel === "__all__" ? "active" : ""}" data-g="__all__"><span>All activity</span><span class="count">${fmt(visCount(events.map((_, i) => i)))}</span></div>`;
+    const item = (cls, key, level, title, inner, expanded) =>
+      `<div class="tree ${cls} ${sel === key ? "active" : ""}" data-g="${esc(key)}" role="treeitem" aria-level="${level}" tabindex="${sel === key ? 0 : -1}" aria-selected="${sel === key}"${expanded == null ? "" : ` aria-expanded="${expanded}"`} title="${esc(title)}">${inner}</div>`;
+    const caret = (open, what) => `<span class="caret" data-toggle="1" title="${open ? "Collapse" : "Expand"} (shows the ${what} without opening this level)">${open ? "▾" : "▸"}</span>`;
+    let html = item("all", "__all__", 1, "All activity", `<span>All activity</span><span class="count">${fmt(visCount(events.map((_, i) => i)))}</span>`);
     let any = false;
     for (const m of months) {
       const mv = visCount(m.events);
       if (!mv && anyFilter()) continue;
       any = true;
       const open = expandedMonths.has(m.month);
-      html += `<div class="tree month ${sel === m.key ? "active" : ""}" data-g="${esc(m.key)}" title="${esc(monthLabel(m.month))}: ${fmt(m.events.length)} events"><span><span class="caret">${open ? "▾" : "▸"}</span>${esc(monthLabel(m.month))}${reviewMark(m)}</span><span class="count">${fmt(mv)}</span></div>`;
+      html += item("month", m.key, 1, `${monthLabel(m.month)}: ${fmt(m.events.length)} events`,
+        `<span>${caret(open, "weeks")}${esc(monthLabel(m.month))}${reviewMark(m)}</span><span class="count">${fmt(mv)}</span>`, open);
       if (!open) continue;
       for (const w of m.weeks) {
         const wv = visCount(w.events);
         if (!wv && anyFilter()) continue;
         const wopen = expandedWeeks.has(w.id), reviewed = !!AIRecap.cached(weekReviewKey(w));
-        html += `<div class="tree week ${sel === w.key ? "active" : ""}" data-g="${esc(w.key)}" title="${esc(weekLabelLong(w))}${reviewed ? " · Claude review saved" : " · expanding runs Claude labeling + high-risk review"}"><span><span class="caret">${wopen ? "▾" : "▸"}</span>${esc(weekLabel(w))}${reviewed ? ` <span class="ai-dot" title="Claude review saved">AI</span>` : ""}${reviewMark(w)}</span><span>${hiMark(w.events)}<span class="count">${fmt(wv)}</span></span></div>`;
+        html += item("week", w.key, 2, `${weekLabelLong(w)}${reviewed ? " · Claude review saved" : " · opening this week runs Claude labeling + high-risk review"}`,
+          `<span>${caret(wopen, "days")}${esc(weekLabel(w))}${reviewed ? ` <span class="ai-dot" title="Claude review saved">AI</span>` : ""}${reviewMark(w)}</span><span>${hiMark(w.events)}<span class="count">${fmt(wv)}</span></span>`, wopen);
         if (!wopen) continue;
         for (const d of w.days) {
           const dv = visCount(d.events);
           if (!dv && anyFilter()) continue;
-          html += `<div class="tree day ${sel === d.key ? "active" : ""}" data-g="${esc(d.key)}" title="${esc(dayLabelLong(d.day))}"><span>${esc(dayLabel(d.day))}${reviewMark(d)}</span><span>${hiMark(d.events)}<span class="count">${fmt(dv)}</span></span></div>`;
+          html += item("day", d.key, 3, dayLabelLong(d.day), `<span>${esc(dayLabel(d.day))}${reviewMark(d)}</span><span>${hiMark(d.events)}<span class="count">${fmt(dv)}</span></span>`);
         }
       }
     }
     if (!any) html += `<div class="empty">No logs match the current search / risk filter.</div>`;
-    $("sidebar").innerHTML = html;
+    const sb = $("sidebar");
+    sb.setAttribute("role", "tree");
+    sb.setAttribute("aria-label", "Months, weeks and days");
+    sb.innerHTML = html;
+    // keep the selected level visible in the tree when it was chosen from the main area
+    const act = sb.querySelector(".tree.active");
+    if (act && (act.offsetTop < sb.scrollTop || act.offsetTop + act.offsetHeight > sb.scrollTop + sb.clientHeight)) act.scrollIntoView({ block: "nearest" });
   }
 
   function monthLabel(m) {
@@ -1596,17 +1674,38 @@ const XlsxWriter = (() => {
     return sortMode === "risk" ? list.sort(byRisk) : list;
   }
 
+  // Breadcrumb (every ancestor is a link) + Up / Prev / Next on the current level.
   function breadcrumb() {
     const k = scopeKind(), x = scope();
     if (!x) return "";
-    const parts = [`<a class="jump" data-act="open-scope" data-g="__all__">All activity</a>`, `<a class="jump" data-act="open-scope" data-g="${esc(MONTH_PREFIX + x.month)}">${esc(monthLabel(x.month))}</a>`];
-    if (k === "week" || k === "day") { const w = weekOfScope(); parts.push(`<a class="jump" data-act="open-scope" data-g="${esc(w.key)}">${esc(weekLabel(w))}</a>`); }
-    if (k === "day") parts.push(`<span>${esc(dayLabel(x.day))}</span>`);
-    return `<div class="crumbs">${parts.join(" › ")}</div>`;
+    const m = scope(MONTH_PREFIX + x.month), w = weekOfScope();
+    const parts = [`<a class="jump" data-act="open-scope" data-g="__all__">All activity</a>`,
+      k === "month" ? `<span class="here">${esc(monthLabel(x.month))}</span>` : openLink(m)];
+    if (k === "week") parts.push(`<span class="here">${esc(weekLabel(w))}</span>`);
+    if (k === "day") parts.push(openLink(w), `<span class="here">${esc(dayLabel(x.day))}</span>`);
+    const up = scope(parentKey()), prev = siblingOf(selectedGroup, -1), next = siblingOf(selectedGroup, 1);
+    const upName = up ? shortLabel(up) : "All activity";
+    return `<div class="levelnav"><nav class="crumbs" aria-label="Breadcrumb">${parts.join(" › ")}</nav><span class="spacer"></span>
+      <span class="kbd-hint meta" style="font-size:11px"><kbd>U</kbd> up · <kbd>[</kbd> <kbd>]</kbd> prev / next · <kbd>N</kbd> next to review</span>
+      <button class="small" data-act="open-scope" data-g="${esc(parentKey())}" title="Up to ${esc(upName)} (U)">↑ ${esc(upName)}</button>
+      <button class="small" data-act="open-scope" data-g="${prev ? esc(prev.key) : ""}" ${prev ? "" : "disabled"} title="Previous ${k} ([)">‹ ${prev ? esc(shortLabel(prev)) : "Previous"}</button>
+      <button class="small" data-act="open-scope" data-g="${next ? esc(next.key) : ""}" ${next ? "" : "disabled"} title="Next ${k} (])">${next ? esc(shortLabel(next)) : "Next"} ›</button>
+    </div>${siblingStrip()}`;
+  }
+
+  // Day -> the other days of its week; week -> the other weeks of its month. One click to a sibling.
+  function siblingStrip() {
+    const k = scopeKind(), x = scope();
+    if (k !== "day" && k !== "week") return "";
+    const sibs = k === "day" ? weekOfScope().days : scope(MONTH_PREFIX + x.month).weeks;
+    return `<div class="sibstrip" role="tablist" aria-label="${k === "day" ? "Days of this week" : "Weeks of this month"}">${sibs.map((s) => {
+      const n = visCount(s.events);
+      return `<button role="tab" aria-selected="${s.key === selectedGroup}" class="${s.key === selectedGroup ? "on" : ""}" data-act="open-scope" data-g="${esc(s.key)}" ${n ? "" : "disabled"} title="${esc(k === "day" ? dayLabelLong(s.day) : weekLabelLong(s))}">${esc(shortLabel(s))}${reviewMark(s)}${hiMark(s.events)}<span class="count">${fmt(n)}</span></button>`;
+    }).join("")}</div>`;
   }
 
   function scopeHeaderHTML(list, noun) {
-    return `${breadcrumb()}<div class="group-head">
+    return `<div class="group-head">
       <h2>${esc(scopeTitle())}</h2>
       <span class="meta">${fmt(list.length)} events · ${fmt(list.reduce((n, ei) => n + events[ei].rows.length, 0))} field changes</span>
       <span id="listStatus">${listStatusHTML(list)}</span>
@@ -1615,6 +1714,19 @@ const XlsxWriter = (() => {
       <button class="small" data-act="reset-list" ${list.length ? "" : "disabled"} title="Set every event in this ${noun} back to Not Reviewed">Reset</button>
       <button class="small" data-act="goto-recap" title="Jump to the recap at the end">↓ Recap</button>
     </div>`;
+  }
+
+  // Small day links inside a month's week row: jump straight to a day (no Claude call; a day never triggers one).
+  function dayLinksHTML(w) {
+    return `<div class="kids">${w.days.map((d) => {
+      const n = visCount(d.events);
+      if (!n) return "";
+      let hi = 0;
+      for (const ei of d.events) if (events[ei].risk.level === "high" && (!anyFilter() || passes(ei)) && ReviewStore.summarize(events[ei].rows).state !== "approved") hi++;
+      const ok = !scopePending(d);
+      return openLink(d, dayLabel(d.day).replace(/,/g, ""), hi ? "has-hi" : ok ? "all-ok" : "")
+        .replace("<a ", `<a title="${esc(dayLabelLong(d.day))}: ${fmt(n)} events${hi ? ` · ${fmt(hi)} High not approved` : ""}${ok ? " · all approved" : ""}" `);
+    }).join("")}</div>`;
   }
 
   // Month -> table of weeks; week -> table of days.
@@ -1633,7 +1745,7 @@ const XlsxWriter = (() => {
       const label = kind === "month" ? weekLabel(c) : dayLabel(c.day);
       const claude = kind === "month" ? (AIRecap.cached(weekReviewKey(c)) ? "Reviewed" : weekLabelled(c) ? "Labelled" : "—") : "";
       html += `<tr class="${idx.length ? "" : "empty-row"}">
-        <td><a class="jump" data-act="open-scope" data-g="${esc(c.key)}">${esc(label)}</a></td>
+        <td><a class="jump" data-act="open-scope" data-g="${esc(c.key)}">${esc(label)}</a>${kind === "month" ? dayLinksHTML(c) : ""}</td>
         <td class="num">${fmt(idx.length)}</td>
         <td class="num ${n.high ? "c-high" : ""}">${fmt(n.high)}</td><td class="num ${n.medium ? "c-medium" : ""}">${fmt(n.medium)}</td><td class="num">${fmt(n.low)}</td><td class="num muted">${fmt(n.unrated)}</td>
         <td><span class="minibar" title="${fmt(rv.approved)} approved · ${fmt(rv.denied)} denied of ${fmt(idx.length)}"><i style="width:${pct(rv.approved)}%;background:var(--ok)"></i><i style="width:${pct(rv.denied)}%;background:var(--bad)"></i></span> ${fmt(rv.approved + rv.denied)}/${fmt(idx.length)}</td>
@@ -1648,7 +1760,7 @@ const XlsxWriter = (() => {
     const kind = scopeKind(), x = scope();
     aiFlags = cachedFlags(weekOfScope()); // AI badges from a saved week review, if any
     const list = currentEventList();
-    let html = `<section class="recap risk-review" id="riskReview"></section>`;
+    let html = `${breadcrumb()}<section class="recap risk-review" id="riskReview"></section>`;
     if (kind === "month" || kind === "week") {
       html += scopeHeaderHTML(list, kind) + scopeTableHTML(kind, x);
     } else {
@@ -1674,7 +1786,15 @@ const XlsxWriter = (() => {
     const name = scopeTitle(key) + (anyFilter() ? " (matching the current search / risk filter)" : "");
     if (!confirm(`Approve ${fmt(idx.length)} event(s) in ${name}? (${fmt(ids.length)} field changes)`)) return;
     const changed = ReviewStore.setStatus(ids, value);
-    toast(`✓ Approved ${fmt(changed)} row(s) in ${esc(scopeTitle(key))}.`);
+    toast(`✓ Approved ${fmt(changed)} row(s) in ${esc(scopeTitle(key))}.${nextLinkHTML(key)}`);
+  }
+
+  // "Next day / week / month to review ›" link shown after approving a whole scope.
+  function nextLinkHTML(key) {
+    const k = scopeKind(key);
+    if (k !== "day" && k !== "week" && k !== "month") return "";
+    const nx = nextPending(key);
+    return nx ? ` <a class="jump" data-act="open-scope" data-g="${esc(nx.key)}">Next ${k} to review: ${esc(shortLabel(nx))} ›</a>` : ` All later ${k}s are approved.`;
   }
 
   // ---------- Recap (Scope 4): end of each group, always for the WHOLE group ----------
@@ -1878,7 +1998,7 @@ const XlsxWriter = (() => {
       for (const ei of idx) c[events[ei].risk.level]++;
       const wk = kind === "month" ? x.weeks : weeks, done = wk.filter((w) => AIRecap.cached(weekReviewKey(w))).length;
       box.innerHTML = card(head(esc(scopeTitle())) +
-        `<p class="muted">Claude reviews one <b>week</b> at a time: expand a week in the sidebar (or open one ${kind === "month" ? "below" : "from a month"}) to have Claude label its events and review the High-risk ones.</p>` +
+        `<p class="muted">Claude reviews one <b>week</b> at a time: open a week ${kind === "month" ? "below or in the sidebar" : "from a month or the sidebar"} to have Claude label its events and review the High-risk ones.</p>` +
         `<p class="muted">So far: <b style="color:var(--bad)">${fmt(c.high)} High</b> · <b style="color:var(--warn)">${fmt(c.medium)} Medium</b> · ${fmt(c.low)} Low · ${fmt(c.unrated)} unrated · ${fmt(done)} of ${fmt(wk.length)} weeks reviewed.</p>`);
       return;
     }
@@ -1969,7 +2089,8 @@ const XlsxWriter = (() => {
   // Open the event (expanding the list if needed) and scroll to it.
   function jumpToEvent(ei) {
     if (!passes(ei)) { toast("That event is hidden by the current search / risk filter — clear the filter to see it."); return; }
-    let list = currentEventList();
+    let list = view === "grouped" ? currentEventList() : [];
+    if (view !== "grouped") setView("grouped");
     if (list.indexOf(ei) < 0 || scopeKind() === "month" || scopeKind() === "week") { // open the event's day
       selectScope(DAY_PREFIX + events[ei].day); render(); list = currentEventList();
     }
@@ -2099,6 +2220,7 @@ const XlsxWriter = (() => {
       <summary>
         ${riskBadge(e.risk)}${aiBadge(ei)}
         <span class="time">${esc(e.date)}</span>
+        ${scopeKind() !== "day" ? `<a class="jump where" data-act="open-scope" data-g="${esc(DAY_PREFIX + e.day)}" title="Open ${esc(dayLabelLong(e.day))} (${esc(weekLabel(scope(WEEK_PREFIX + e.week)))})">${esc(dayLabel(e.day))} ›</a>` : ""}
         ${showName}
         <span class="rtype">${highlight(e.rtype || "(no record type)")}</span>
         <span class="rec">${highlight(e.record || "(no name)")}</span>
@@ -2229,7 +2351,7 @@ const XlsxWriter = (() => {
     if (riskFiltered()) scope += ` with ${[...riskFilter].map((l) => RiskEngine.LABEL[l]).join(" / ")} risk`;
     if (!confirm(`${verb} ${fmt(list.length)} event(s)${scope} (${fmt(ids.length)} field changes)?`)) return;
     const changed = ReviewStore.setStatus(ids, value);
-    toast(`${value === ReviewStore.APPROVED ? "✓ Approved" : "↺ Reset"} ${fmt(changed)} row(s).`);
+    toast(`${value === ReviewStore.APPROVED ? "✓ Approved" : "↺ Reset"} ${fmt(changed)} row(s).${value === ReviewStore.APPROVED ? nextLinkHTML(selectedGroup) : ""}`);
   }
 
   // Field-change table is built only when an event is expanded (keeps the DOM small for 100k rows).
@@ -2277,7 +2399,7 @@ const XlsxWriter = (() => {
       const st = ReviewStore.summarize([i]);
       const nc = ReviewStore.commentsFor([i]).length;
       const risk = events[rowEvent[i]].risk;
-      html += `<tr class="${risk.riskyRows.has(i) ? "risky" : ""}"><td>${i + 1}</td><td>${riskBadge(risk)}</td>${rows[i].map((v) => `<td title="${esc(v)}">${highlight(v)}</td>`).join("")}
+      html += `<tr class="${risk.riskyRows.has(i) ? "risky" : ""}"><td><a class="jump" data-act="jump" data-e="${rowEvent[i]}" title="Open this row's event in its day (Grouped view)">${i + 1}</a></td><td>${riskBadge(risk)}</td>${rows[i].map((v) => `<td title="${esc(v)}">${highlight(v)}</td>`).join("")}
         <td>${statusPill(st)}${nc ? ` <span class="pill" title="${nc} comment(s) — open in Grouped view">Notes ${nc}</span>` : ""}
           <button class="icon act-approve ${st.state === "approved" ? "on" : ""}" data-act="row-approve" data-r="${i}" title="Approve row">✓</button>
           <button class="icon act-deny ${st.state === "denied" ? "on" : ""}" data-act="row-deny" data-r="${i}" title="Deny row">✗</button></td></tr>`;
@@ -2373,20 +2495,71 @@ const XlsxWriter = (() => {
   });
   $("sortMode").addEventListener("change", (e) => { sortMode = e.target.value; eventsShown = EVENTS_PAGE; render(); });
 
-  $("tabGrouped").addEventListener("click", () => { view = "grouped"; $("tabGrouped").classList.add("active"); $("tabTable").classList.remove("active"); render(); });
-  $("tabTable").addEventListener("click", () => { view = "table"; $("tabTable").classList.add("active"); $("tabGrouped").classList.remove("active"); render(); });
+  $("tabGrouped").addEventListener("click", () => { setView("grouped"); render(); });
+  $("tabTable").addEventListener("click", () => { setView("table"); render(); });
 
   $("sidebar").addEventListener("click", (e) => {
     const el = e.target.closest("[data-g]");
     if (!el) return;
     const key = el.dataset.g, kind = scopeKind(key), x = scope(key);
+    // The caret only shows / hides the children (peek at weeks or days without opening the level or calling Claude).
+    if (e.target.closest("[data-toggle]")) { toggleExpand(key); renderSidebar(); focusTree(key); return; }
     // clicking the already-selected month / week collapses it; otherwise select (and expand) it
-    if (kind === "month" && selectedGroup === key && expandedMonths.has(x.month)) expandedMonths.delete(x.month);
-    else if (kind === "week" && selectedGroup === key && expandedWeeks.has(x.id)) expandedWeeks.delete(x.id);
-    else selectScope(key);
-    if (view !== "grouped") { view = "grouped"; $("tabGrouped").classList.add("active"); $("tabTable").classList.remove("active"); }
-    render();
-    $("main").scrollTop = 0;
+    if (kind === "month" && selectedGroup === key && expandedMonths.has(x.month)) { expandedMonths.delete(x.month); renderSidebar(); return; }
+    if (kind === "week" && selectedGroup === key && expandedWeeks.has(x.id)) { expandedWeeks.delete(x.id); renderSidebar(); return; }
+    goScope(key);
+    focusTree(key);
+  });
+
+  function toggleExpand(key, force) {
+    const kind = scopeKind(key), x = scope(key);
+    const set = kind === "month" ? expandedMonths : kind === "week" ? expandedWeeks : null;
+    if (!set) return false;
+    const id = kind === "month" ? x.month : x.id, open = set.has(id);
+    if (force === open) return false;
+    open ? set.delete(id) : set.add(id);
+    return true;
+  }
+  function focusTree(key) { [...$("sidebar").querySelectorAll(".tree")].find((t) => t.dataset.g === key)?.focus(); }
+
+  // Tree keyboard: Up/Down move, Right expands / goes to first child, Left collapses / goes to parent, Enter opens.
+  $("sidebar").addEventListener("keydown", (e) => {
+    const el = e.target.closest(".tree");
+    if (!el) return;
+    const items = [...$("sidebar").querySelectorAll(".tree")], i = items.indexOf(el), key = el.dataset.g;
+    const move = (to) => { if (!to) return; items.forEach((t) => t.tabIndex = -1); to.tabIndex = 0; to.focus(); };
+    switch (e.key) {
+      case "ArrowDown": move(items[i + 1]); break;
+      case "ArrowUp": move(items[i - 1]); break;
+      case "Home": move(items[0]); break;
+      case "End": move(items[items.length - 1]); break;
+      case "ArrowRight":
+        if (el.getAttribute("aria-expanded") === "false") { toggleExpand(key, true); renderSidebar(); focusTree(key); }
+        else if (el.getAttribute("aria-expanded") === "true") move(items[i + 1]);
+        break;
+      case "ArrowLeft":
+        if (el.getAttribute("aria-expanded") === "true") { toggleExpand(key, false); renderSidebar(); focusTree(key); }
+        else { const pk = parentKey(key); if (pk) focusTree(pk); }
+        break;
+      case "Enter": case " ": goScope(key); focusTree(key); break;
+      default: return;
+    }
+    e.preventDefault();
+  });
+
+  // Page shortcuts (not while typing): U = up a level, [ / ] = previous / next on the same level, N = next to review.
+  document.addEventListener("keydown", (e) => {
+    if (!rows.length || e.ctrlKey || e.metaKey || e.altKey) return;
+    if (e.target.closest("input, textarea, select, [contenteditable]") || !$("aiPanel").hidden || !$("exportPanel").hidden) return;
+    const k = scopeKind();
+    if (e.key === "u" || e.key === "U") { if (k && k !== "all") goScope(parentKey()); }
+    else if (e.key === "[" || e.key === "]") { const s = siblingOf(selectedGroup, e.key === "[" ? -1 : 1); if (s) goScope(s.key); }
+    else if (e.key === "n" || e.key === "N") {
+      if (k === "all" || !k) return;
+      const s = nextPending(selectedGroup);
+      s ? goScope(s.key) : toast(`No later ${k} left to review.`);
+    } else return;
+    e.preventDefault();
   });
 
   // Delegated clicks: WIP buttons, "show more", pager
@@ -2416,11 +2589,7 @@ const XlsxWriter = (() => {
         case "ai-relabel":
           if (confirm("Ask Claude to label every event of this week again? (new API calls)")) renderRiskReview({ relabel: true, manual: true, force: true });
           break;
-        case "open-scope":
-          selectScope(act.dataset.g);
-          if (view !== "grouped") { view = "grouped"; $("tabGrouped").classList.add("active"); $("tabTable").classList.remove("active"); }
-          render(); $("main").scrollTop = 0;
-          break;
+        case "open-scope": goScope(act.dataset.g); break;
         case "approve-scope": setScopeStatus(act.dataset.g, ReviewStore.APPROVED); break;
       }
       return;

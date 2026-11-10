@@ -381,6 +381,30 @@ Solution: add expandable Weeks inside each month. Expanding a week calls the API
    - The month-based labeling suite was retired; the new suite replaces it.
    - **Screenshot:** a headless Chrome screenshot confirmed the month view and sidebar tree.
 
+## Prompt 17 (2026-11-10)
+> review the UX workflow, make each level more accessable for it's parent/child level
+
+**What the AI found:** the breadcrumb links weren't styled (they didn't look clickable). A day had no way to reach the next day except going back up. Clicking a week only to see its days started the Claude calls. Events in "All activity", search results and the table view couldn't open their day. After approving a day, nothing led to the next one.
+
+**What the AI changed (in `index.html`):**
+1. **Navigation bar at the top of every level:**
+   - A breadcrumb where every parent level is a link and the current level is shown in bold.
+   - **↑ Up** to the parent level.
+   - **‹ Prev / Next ›** on the same level. These cross week and month boundaries and skip levels hidden by the search or risk filter.
+2. **Sibling strip:** a day view shows tabs for the other days of its week; a week view shows tabs for the other weeks of its month. Each tab has its count, review mark and unapproved-High count.
+3. **Month → day directly:** each week row in the month table lists its days as small links. Days with unapproved High events are red; fully approved days are green.
+4. **Event → its day:** outside a day view, each event has a "Tue 19 Aug ›" link to its day. In the table view, the row # opens the row's event inside its day.
+5. **Next to review:** after "Approve day / week / month", a message offers "Next day to review: … ›", skipping levels that are already approved.
+6. **Sidebar:**
+   - The ▸/▾ caret now only expands or collapses. You can see a week's days without opening the week, so no Claude call is made. Clicking the name still opens the level.
+   - The sidebar follows the selection.
+   - Keyboard: ↑/↓ move, → expands, ← collapses or goes to the parent, Enter opens.
+7. **Shortcuts:** U = up a level, [ / ] = previous / next, N = next to review. They're ignored while typing.
+8. **Testing:**
+   - **New navigation suite (jsdom, no API key):** all 38 checks pass.
+   - **Earlier suites still pass:** Month › Week › Day (29), Scope 2 (28) and Export (16).
+   - **Screenshot:** a headless Chrome screenshot confirmed the day view.
+
 ---
 
 ## Notes on what I used / did not use
