@@ -38,18 +38,21 @@
         [Summary]
    Which receated too fine grouping with still thousands of groups, makes it hard to review.
 
-  2. Decide to update logic to the prioritize events based on two bases. 
-  
-    For manual inputs involves role change and financial. High Priority.
-
-    For automated events, checks when the automation pattern changes. As a change of script would impact the most or is when unauthorized event happens.
+  2.
   
 
      
 
 ## What a reviewer needs in order to make a decision, and how your interface supports it.
-     
+ Decide to update logic to the prioritize events based on two bases. 
+  
+For manual inputs involves role change and financial. High Priority.
 
+For automated events, checks when the automation pattern changes. As a change of script would impact the most or is when unauthorized event happens.   
+
+My interface will mark the abvoe actions as risk and allow user to review these changes.
+
+Routine updates/or repeating actions are marked as low risk and are able to be bulk approved.
 
 # Step 2
 
