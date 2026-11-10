@@ -240,6 +240,147 @@ Scope: reviewing my design document and exploring the system-notes data
    - Earlier suites still pass: Scope 2 (28), Scope 3 (27), Scope 4 (36).
    - Not tested here: opening the file in Microsoft Excel itself (I should do this).
 
+## Prompt 12
+> for Risk Engine, use claude api to highlight high risk recaps. Show it at the top of the page. Only review a month when the month is selected.
+
+**Clarifying questions and my answers:**
+- **What "selecting a month" means** → **clickable month headings.** A month shows all users' events. Claude reviews that month's High-risk events, and picking a user inside the month shows the same month's highlights filtered to that user, with no extra call.
+- **Relation to the Scope 4 recap at the bottom** → **replace the bottom Claude recap.** The AI moves to the top as high-risk highlights; the bottom keeps only the local (non-AI) recap.
+
+**What the AI changed (in `index.html`):**
+1. `AIRecap` module: the general Claude recap became `reviewMonth()`, a Claude review of **one month's High-risk events** from the RiskEngine.
+   - **Input:** a masked digest of up to 60 of the month's highest-scoring High events (8 field changes each, cash-flow rows first), plus High counts by category and by user.
+   - **Output:** structured JSON: an overview, highlights `[{ref, severity: critical | high | watch, title, why}]`, and a "looks routine" note.
+   - **Unchanged from Scope 4:** same model (`claude-opus-5-5`), effort medium, server-side fallback, refusal handling, masking and prompt-injection guard. Results are cached per file + grouping + month (+ High count).
+2. UI:
+   - **Sidebar month headings** are now selectable: "<Month> · all users", showing every event of the month with a user pill on each event. A 🤖 mark appears once a month has a saved review.
+   - **New top panel**, "🤖 Claude high-risk review", above the group header:
+     - **Month selected:** runs the review automatically (once, then cached). It shows highlights with severity pills, the event (with jump link), the user and review status, and a Re-run button.
+     - **User inside a month:** shows the month's highlights filtered to that user. If the month hasn't been reviewed yet, it offers "Select <Month>" and makes no API call.
+     - **All activity:** asks you to select a month.
+     - **Month with no High events:** says there's nothing to review.
+   - Highlighted events also get a 🤖 Critical / High / Watch badge in the event list.
+   - Removed the Claude card from the bottom recap; the local recap stays.
+   - Updated the AI settings text and auto-run option ("Run the Claude review automatically when a month is selected").
+3. Testing (still no real API calls):
+   - **New month-review suite** with a fake SDK: all 33 checks pass. It covers:
+     - panel placement and the no-key prompt;
+     - user-month making no call, selecting a month making exactly one call;
+     - digest contents: only that month's High events, highest scores first, ≤60 events, ≤8 changes each;
+     - escaping, badges, jump links, user filtering, and filters not triggering calls;
+     - per-month caching, the All-activity hint, Re-run, auth error, refusal, auto-off and masking.
+   - **Real SDK against a local mock:** all 7 checks pass.
+   - **Regression:** Scope 2 (28), Scope 3 (27), Export (16) and the openpyxl validation still pass.
+   - Note: `system_notes_sample.csv` had been deleted from the repo, so the tests used an identical CSV converted from the xlsx (kept outside the repo).
+
+## Prompt 13
+> remove previous hard written risk engine stand dards and use claude to label high - low risk.
+
+**Measured first:** labeling every event sends about 1.0M input tokens for the whole sample (median month ~57k, largest month ~220k). The 17,059 events reduce to 772 distinct patterns.
+
+**Clarifying questions and my answers:**
+- **Granularity** → **every event, per month.** Claude labels each event of a month when that month is selected; months not opened stay "Unrated".
+- **Labeling model** → **Claude Haiku 5.5** (cheapest). The month high-risk review stays on Claude Opus 5.5.
+- **Hints** → **facts as hints, Claude decides.** The hard-coded levels and categories are removed. Neutral facts are still sent (field count, bulk context, edited again / reverted later, changed twice in one save), together with my Scope 3 priorities, and Claude makes every High / Medium / Low call with a reason.
+
+**What the AI changed (in `index.html`):**
+1. `RiskEngine` is now **facts only**. The rule table (cash-flow categories, UI-only exceptions, `assess()`) is deleted. `facts()` computes the neutral facts; `unrated()` / `labeled()` build what the UI shows. A new level, **Unrated**, is the starting state.
+2. `AIRecap.labelEvents()` labels a batch of events with `claude-haiku-5-5`.
+   - **Request:** Messages API, effort `low`, structured output `{labels:[{ref, level: high|medium|low, reason ≤12 words, key_fields}]}`. No fallback parameter, since Haiku 5.5 has no server-side fallback; a refusal is reported for that batch.
+   - **Input:** at most 8 changes per event, values cut to 40 characters; secrets and bank/account numbers redacted, long digit runs masked.
+   - **Saving:** each batch is saved in localStorage, so retries and reloads don't repeat calls.
+3. Selecting a month now runs **step 1:** label all its events in batches of 120, 4 in parallel, with a live progress bar; badges, chips and the sidebar update as batches finish.
+   - **Then step 2:** the Opus 5.5 high-risk review of **Claude's** High events, shown at the top as before.
+   - **Buttons:** ↻ Re-label (asks first), ↻ Re-run review, and Retry, which sends only failed batches.
+   - **Never calls Claude:** a user inside a month, or "All activity".
+   - **On load:** saved labels are re-applied with no calls.
+4. **UI:**
+   - an "Unrated" chip and badge;
+   - each event's "Why" panel shows Claude's reason first, then the facts;
+   - ⚠ marks the fields Claude named;
+   - the local recap shows Claude's label counts plus how many events are not labelled yet;
+   - the AI settings text explains what is sent for labeling.
+5. **Testing**, with no real API calls:
+   - **New labeling suite** with a fake SDK: all 27 checks pass. It covers:
+     - everything starting Unrated and no rule table left;
+     - all 296 August events labelled in 3 batches, with Haiku 5.5, effort low and structured output, and no fallbacks / betas / thinking;
+     - my priorities present in the prompt, facts sent as hints;
+     - the Opus review receiving only Claude-High events;
+     - other months staying Unrated;
+     - re-sorting, reasons and key fields;
+     - no calls for a user inside a month;
+     - partial failure → Retry re-sends only the failed batch; Re-label re-sends all 19 batches;
+     - labels restored on reload; masking.
+   - **Real SDK against a local mock:** all 5 checks pass. Label requests go to `/v1/messages` with no beta header (~26–65k characters per batch); the review uses the Opus fallback beta.
+   - **Regression:** Scope 2 (28) and Export (16) plus the openpyxl validation pass. The old rule-based Scope 3 and first month-review suites were retired because they tested the removed rules.
+
+## Prompt 14
+> when reviewing notes which part of the code is being used as the standard.
+
+**What the AI did:** answered only, no changes. No code rules decide levels any more. The standard is the plain-English labeling prompt `LABEL_SYSTEM` (High / Medium / Low definitions) plus `LABEL_SCHEMA`, and for the top panel the review prompt `SYSTEM` (Critical / High / Watch) plus `SCHEMA`. Supporting pieces:
+- `RiskEngine.facts()`, `MANY_FIELDS` and `BULK_CONTEXTS` (hints sent to Claude);
+- `digestForLabel` / `digestForReview`, `MAX_CHANGES`, `MAX_EVENTS_SENT` and `SENSITIVE_FIELD` (what is sent and masked);
+- `BASE` / `byRisk` (sorting only);
+- raise `LABEL_VERSION` / `PROMPT_VERSION` after editing the prompts.
+
+## Prompt 15
+> update the format to a less roundy, professional system look
+
+**What the AI changed (in `index.html`, styling only; behavior unchanged):**
+1. A "Professional theme" block at the end of the stylesheet; remove it to go back:
+   - **Shape and palette:** square corners everywhere (except the loading spinner); neutral grey/navy palette; Segoe UI 13px; denser spacing.
+   - **Header and controls:** dark navy header with outlined buttons; flat square buttons and inputs with a visible focus outline.
+   - **Tags:** rectangular status / risk / severity tags instead of round pills.
+   - **Sidebar:** uppercase month section labels, and an accent bar on the selected item.
+   - **Tables and cards:** uppercase table headers with zebra rows in the table view; recap cards with uppercase titles and an accent top border for the Claude panel.
+   - **Dialogs and toast:** dialogs with a dark title bar and a lighter shadow; a squared toast.
+2. Replaced pictograph emoji in headings, buttons and badges with plain text, e.g.:
+   - "🔑 AI settings" → "AI Settings", "⬇ Export .xlsx" → "Export .xlsx";
+   - "📋 Recap" → "Group Recap"; the 🤖 marks → "AI" tags;
+   - 💬 → "Comment" / "Notes"; reason icons → small text tags (AI / Size / History).
+   - Kept the typographic marks ✓ ✗ ⚠ ↻.
+3. **Checks:** Scope 2 (28), Export (16) and Claude-labeling (27) suites still pass. A headless Chrome screenshot of a preview copy confirmed the main view; the dialogs weren't captured.
+
+## Prompt 16 (2026-11-10)
+> update based on feedback
+
+(The "Updates" section I added to `design_process.md`:
+1. Listing by event creates too many items to review; list by days instead.
+2. Calling the API on an entire month gives less attention to detail.
+
+Solution: add expandable Weeks inside each month. Expanding a week calls the API to review that week's events. Inside a week, events are grouped by day, and clicking a day shows that day's events and their levels. Add buttons to approve by day, week and month.)
+
+**What the AI changed (in `index.html`):**
+1. **Grouping is now Month → Week → Day**, replacing month → user.
+   - Weeks run Monday to Sunday, numbered within the month and clipped to it (e.g. "Week 3 · Aug 11–17"; the first week of Aug 2025 is Aug 1–3).
+   - Every event gets a `day` and a `week`. Scope keys: `month:YYYY-MM`, `week:YYYY-MM|n`, `day:YYYY-MM-DD`.
+2. **Sidebar** is an expandable tree (▸/▾). Each row shows its event count, a review mark (✓ / ● / %), the number of unapproved High events, and an "AI" tag once the week is reviewed. Clicking the selected month or week again collapses it.
+3. **Main area:**
+   - **Month:** a table of its weeks (events, High / Medium / Low / Unrated, review progress bar, Claude status, Open, ✓ Approve week) plus **✓ Approve month**.
+   - **Week:** a table of its days with Open and ✓ Approve day, plus **✓ Approve week**.
+   - **Day:** that day's events, each with its Claude level and a user tag, plus **✓ Approve day**.
+   - **All views:** a breadcrumb (All activity › Month › Week › Day). The local recap now covers the selected month, week or day.
+   - **Filters:** approve buttons respect the current search / risk filter and say so.
+4. **Claude now runs per week.**
+   - **Opening a week** labels exactly that week's events (Haiku 5.5, in batches) and then runs the Opus 5.5 high-risk review of that week's High events, shown at the top.
+   - **Never calls Claude:** a month, a day, or "All activity".
+     - A day shows the week's highlights filtered to that day.
+     - A month shows label counts and how many weeks are reviewed.
+   - **Saved results:** labels and reviews are saved per week and restored on reload. The grouping ID changed, so saved month-based results are not reused.
+   - **Prompt wording:** the review prompt now says "one week at a time".
+   - **Jump links:** from a highlight or recap, a link opens the event inside its day.
+5. **Testing:**
+   - **New navigation suite** with a fake SDK: all 29 checks pass. It covers:
+     - week arithmetic and every event falling inside its week's dates;
+     - month selected by default, a weeks table, and no calls for a month;
+     - opening a week labelling exactly its 130 events in 2 batches, the review getting only that week's High events, other weeks staying Unrated;
+     - the days table, the day view listing only that day with Claude levels, highlights filtered to the day, the breadcrumb;
+     - Approve day / week / month changing exactly the right events, including "Approve month" with a Low-only filter;
+     - collapse, jump links, and restore on reload.
+   - **Updated older suites:** Scope 2 (28/28) and the real-SDK mock (5/5) were adjusted for the new navigation; Export (16/16) and the openpyxl validation pass.
+   - The month-based labeling suite was retired; the new suite replaces it.
+   - **Screenshot:** a headless Chrome screenshot confirmed the month view and sidebar tree.
+
 ---
 
 ## Notes on what I used / did not use

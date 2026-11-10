@@ -61,6 +61,7 @@ Non-functional Requirements:
 
   1. App can load 100k+ rows without crashing.
 
+## Building reviewer
 
 SCOPE 1:
 
@@ -75,7 +76,8 @@ Impletment the approve deny comment section. Separately it from the search and f
 
 SCOPE 3: 
 
-Implement the risk based filtering, assume that things involves cash-flow would be the important ones. Followed by ones that invovle massive fields or quoted in later
+Implement the risk based filtering, assume that things involves cash-flow would be the important ones. Followed by ones that invovle massive fields or quoted in later 
+//The labelling standard, used for every event: LABEL_SYSTEM at index.html:683
 
 SCOPE 4: 
 
@@ -85,3 +87,11 @@ SCOPE 5#:
 
 Implement Export function. 
 Should be able to choose based on Time period/User/ Item Status(approved pending or denied). the output doc will be a xslx document similar to input document. Add a column at the end to indicate cases status.
+
+
+## Updates
+
+1. listing them by event creates too much items to review. instead, list them by days. 
+2. Calling api on entire month creates less attention to details.
+
+Solution: Instead, create another level of expandable UI being Weeks inside each month. Upon expanding the week, calls api review the weeks event. and inside the week menu is grouped by days. User can then click on each day to see the current list of events and their level. Add button to allow approve by days, week and month.
